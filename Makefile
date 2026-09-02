@@ -11,24 +11,58 @@ GOLANGCI_LINT ?= build/tools/golangci-lint
 BUF_VERSION ?= v1.50.0
 PROTOC_GEN_GO_VERSION ?= v1.36.1
 PROTOC_GEN_GO_GRPC_VERSION ?= v1.5.1
+INSTALL_DIR ?=
 
 BUILDINFO_PACKAGE := github.com/course-go-autumn-2026/tripgo-infra/internal/buildinfo
 LDFLAGS := -s -w -X $(BUILDINFO_PACKAGE).version=$(VERSION) -X $(BUILDINFO_PACKAGE).commit=$(COMMIT) -X $(BUILDINFO_PACKAGE).builtAt=$(BUILT_AT)
 
-.PHONY: all build build-tripgoctl build-push-service cross-build container-build \
+.PHONY: all build install build-tripgoctl build-tripgoctl-embedded build-push-service cross-build container-build \
         test test-race vet fmt fmt-check lint lint-install proto-tools-install \
-        proto-generate proto-check contract-sync contract-check fixture-tests installer-test verify \
-        stage5-smoke stage6-smoke stage7-smoke stage8-smoke stage9-smoke stage10-smoke stage11-smoke \
-        build-tripgoctl-stage8 build-tripgoctl-stage9 build-tripgoctl-stage10 \
-        release release-repro-check release-audit release-platform-smoke clean
+        proto-generate proto-check contract-sync contract-check fixture-tests installer-test \
+        staging-check source-check verify integration-lifecycle integration-release-runtime \
+        integration-isolation release release-repro-check release-audit release-platform-check clean
 
 all: build
 
 build: build-tripgoctl build-push-service
 
+install: build-tripgoctl-embedded
+	@set -eu; \
+	dir='$(INSTALL_DIR)'; \
+	if [ -z "$$dir" ]; then \
+		if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then dir=/usr/local/bin; \
+		else dir="$$HOME/.local/bin"; fi; \
+	fi; \
+	mkdir -p "$$dir"; \
+	if [ ! -w "$$dir" ]; then \
+		echo "installation directory is not writable: $$dir" >&2; \
+		echo "set INSTALL_DIR to a writable directory" >&2; \
+		exit 1; \
+	fi; \
+	tmp=$$(mktemp "$$dir/.tripgoctl.new.XXXXXX"); \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	install -m 0755 build/bin/tripgoctl-embedded "$$tmp"; \
+	mv -f "$$tmp" "$$dir/tripgoctl"; \
+	trap - EXIT HUP INT TERM; \
+	echo "Installed locally built tripgoctl to $$dir/tripgoctl"; \
+	case ":$$PATH:" in *":$$dir:"*) ;; *) \
+		echo "Add the installation directory to PATH:"; \
+		echo "  export PATH=\"$$dir:\$$PATH\""; \
+	esac
+
 build-tripgoctl:
 	@mkdir -p build/bin
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o build/bin/tripgoctl ./cmd/tripgoctl
+
+build-tripgoctl-embedded: proto-check
+	@set -eu; \
+	arch=$$(go env GOARCH); push_generated=internal/pushartifact/generated; contract_generated=internal/contractasset/generated; \
+	case "$$arch" in amd64|arm64) ;; *) echo "unsupported local architecture: $$arch" >&2; exit 1;; esac; \
+	rm -rf $$push_generated $$contract_generated; mkdir -p $$push_generated build/bin; \
+	trap 'rm -rf $$push_generated $$contract_generated' EXIT HUP INT TERM; \
+	./scripts/stage-contract-assets; \
+	CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o $$push_generated/push-service ./cmd/push-service; \
+	CGO_ENABLED=0 go build -tags embedded_push,embedded_contracts -trimpath -ldflags "$(LDFLAGS)" -o build/bin/tripgoctl-embedded ./cmd/tripgoctl
 
 build-push-service:
 	@mkdir -p build/bin
@@ -122,44 +156,25 @@ fixture-tests:
 installer-test:
 	./scripts/test-install-tripgoctl
 
-verify: fmt-check vet test-race lint fixture-tests proto-check contract-check cross-build container-build
+staging-check:
+	@test ! -e internal/pushartifact/generated
+	@test ! -e internal/contractasset/generated
 
-stage5-smoke: build-tripgoctl
-	./scripts/smoke-lab1
+# Safe source gate: no Docker daemon, kind cluster, or release-clean worktree required.
+source-check: fmt-check vet test-race fixture-tests proto-check contract-check staging-check
 
-stage6-smoke: build-tripgoctl
-	./scripts/smoke-lab2
+# Full local gate additionally requires the pinned linter and a running Docker daemon.
+verify: source-check lint cross-build container-build
 
-stage7-smoke: build-push-service cross-build
-	./scripts/smoke-push-service
-	./scripts/smoke-push-container
+# Destructive integration gates require no existing tripgo-local cluster or registry.
+integration-lifecycle: build-tripgoctl
+	./scripts/integration-lifecycle
 
-build-tripgoctl-stage8: proto-check
-	@set -eu; \
-	arch=$$(go env GOARCH); push_generated=internal/pushartifact/generated; contract_generated=internal/contractasset/generated; \
-	rm -rf $$push_generated $$contract_generated; mkdir -p $$push_generated build/bin; \
-	trap 'rm -rf $$push_generated $$contract_generated' EXIT HUP INT TERM; \
-	./scripts/stage-contract-assets; \
-	CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o $$push_generated/push-service ./cmd/push-service; \
-	CGO_ENABLED=0 go build -tags embedded_push,embedded_contracts -trimpath -ldflags "$(LDFLAGS)" -o build/bin/tripgoctl-stage8 ./cmd/tripgoctl
+integration-release-runtime: build-tripgoctl-embedded
+	./scripts/integration-release-runtime
 
-stage8-smoke: build-tripgoctl-stage8
-	./scripts/smoke-lab3
-
-build-tripgoctl-stage9: build-tripgoctl-stage8
-	cp build/bin/tripgoctl-stage8 build/bin/tripgoctl-stage9
-
-stage9-smoke: build-tripgoctl-stage9
-	./scripts/smoke-lab4-lab5
-
-build-tripgoctl-stage10: build-tripgoctl-stage9
-	cp build/bin/tripgoctl-stage9 build/bin/tripgoctl-stage10
-
-stage10-smoke: build-tripgoctl-stage10
-	./scripts/smoke-parallel-labs
-
-stage11-smoke:
-	./scripts/smoke-hardening
+integration-isolation: build-tripgoctl-embedded
+	./scripts/integration-isolation
 
 # SOURCE_DATE_EPOCH is part of the release input. Its default is stable so repeated
 # local builds are byte-for-byte identical; production invocations should use the
@@ -182,8 +197,8 @@ release-repro-check:
 release-audit:
 	./scripts/audit-release-cleanup
 
-release-platform-smoke:
-	./scripts/smoke-release-platform
+release-platform-check:
+	./scripts/check-release-platform
 
 clean:
 	rm -rf build internal/pushartifact/generated internal/contractasset/generated

@@ -7,7 +7,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 case $(uname -s) in
 	Linux) os=linux ;;
 	Darwin) os=darwin ;;
-	*) echo "release Docker smoke requires a supported Darwin or Linux host" >&2; exit 3 ;;
+	*) echo "release platform check requires a supported Darwin or Linux host" >&2; exit 3 ;;
 esac
 case $(uname -m) in
 	x86_64) arch=amd64 ;;
@@ -16,10 +16,10 @@ case $(uname -m) in
 esac
 set -- "$root"/build/release/tripgoctl_*_"$os"_"$arch".tar.gz
 test "$#" -eq 1 && test -f "$1" || { echo "expected exactly one $os/$arch release archive" >&2; exit 1; }
-command -v docker >/dev/null 2>&1 || { echo "release smoke requires docker" >&2; exit 3; }
-docker version >/dev/null 2>&1 || { echo "release smoke requires a running Docker daemon" >&2; exit 3; }
+command -v docker >/dev/null 2>&1 || { echo "release platform check requires docker" >&2; exit 3; }
+docker version >/dev/null 2>&1 || { echo "release platform check requires a running Docker daemon" >&2; exit 3; }
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-release-smoke.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-release-check.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 tar -xzf "$1" -C "$work"
 test -x "$work/tripgoctl"
@@ -30,25 +30,25 @@ existing=$(docker ps -a \
 	--filter 'name=^/tripgo-local-registry$' \
 	--format '{{.Names}}')
 if test -n "$existing" || "$work/tripgoctl" cluster status >/dev/null 2>&1; then
-	echo "release smoke requires no existing tripgo-local cluster or registry; nothing was changed" >&2
+	echo "release platform check requires no existing tripgo-local cluster or registry; nothing was changed" >&2
 	exit 4
 fi
-state="$root/build/.release-smoke-state"
+state="$root/build/.release-check-state"
 if ! mkdir "$state" 2>/dev/null; then
-	echo "release smoke state already exists; run scripts/cleanup-release-smoke after verifying ownership" >&2
+	echo "release check state already exists; run scripts/cleanup-release-check after verifying ownership" >&2
 	exit 4
 fi
 printf '%s\n' "$work/tripgoctl" >"$state/cli"
 docker images --filter reference='localhost:5001/tripgo-push-service:*' \
 	--format '{{.Repository}}:{{.Tag}}' | sort -u >"$state/baseline-images"
 cleanup() {
-	"$root/scripts/cleanup-release-smoke"
+	"$root/scripts/cleanup-release-check"
 	rm -rf "$work"
 }
 trap cleanup EXIT HUP INT TERM
 
-TRIPGOCTL="$work/tripgoctl" "$root/scripts/smoke-lab3"
-# smoke-lab3 proves localhost:5001-only push, immutable RepoDigest use, and runtime health/API.
-"$root/scripts/cleanup-release-smoke"
+TRIPGOCTL="$work/tripgoctl" "$root/scripts/integration-release-runtime"
+# The runtime integration proves localhost:5001-only push, immutable RepoDigest use, and runtime health/API.
+"$root/scripts/cleanup-release-check"
 "$root/scripts/audit-release-cleanup"
-echo "native $os/$arch final release managed-registry/digest smoke passed"
+echo "native $os/$arch final release managed-registry/digest check passed"

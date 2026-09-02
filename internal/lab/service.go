@@ -31,6 +31,7 @@ import (
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/cluster"
 	configenv "github.com/course-go-autumn-2026/tripgo-infra/internal/environment"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/generator"
+	"github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/pushimage"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/redact"
 	redpandaconfig "github.com/course-go-autumn-2026/tripgo-infra/internal/redpanda"
@@ -117,6 +118,7 @@ func (s *Service) ConfiguredLab(cwd string) (int, error) {
 
 // Start validates local inputs, reconciles the selected lab, waits for readiness, and writes local outputs.
 func (s *Service) Start(ctx context.Context, cwd, version string) (RuntimeStatus, error) {
+	progress.Report(ctx, progress.Stage, "Validating environment configuration")
 	config, err := loadCurrentConfig(cwd)
 	if err != nil {
 		return RuntimeStatus{}, err
@@ -124,6 +126,7 @@ func (s *Service) Start(ctx context.Context, cwd, version string) (RuntimeStatus
 	if err := ensureEnvWritable(filepath.Join(cwd, ".env")); err != nil {
 		return RuntimeStatus{}, err
 	}
+	progress.Report(ctx, progress.Stage, "Connecting to the local cluster")
 	lease, access, client, err := s.client(ctx)
 	if err != nil {
 		return RuntimeStatus{}, err
@@ -153,6 +156,7 @@ func (s *Service) Start(ctx context.Context, cwd, version string) (RuntimeStatus
 			return RuntimeStatus{}, fmt.Errorf("prepare local Push Service image: %w", err)
 		}
 	}
+	progress.Report(ctx, progress.Stage, "Generating Kubernetes resources")
 	bundle, err := generator.Generate(config, options)
 	if err != nil {
 		return RuntimeStatus{}, err
@@ -160,11 +164,14 @@ func (s *Service) Start(ctx context.Context, cwd, version string) (RuntimeStatus
 	if err := verifyManifestBundleOwnership(ctx, client, bundle, config.Lab, entry.Namespace, access.ClusterID); err != nil {
 		return RuntimeStatus{}, err
 	}
+	progress.Report(ctx, progress.Stage, "Applying Kubernetes resources")
 	for _, file := range bundle.Files {
+		progress.Report(ctx, progress.Activity, "Applying "+file.Name)
 		if err := applyManifest(ctx, client, file.Content, config.Lab, entry.Namespace, access.ClusterID); err != nil {
 			return RuntimeStatus{}, fmt.Errorf("apply %s: %w", file.Name, err)
 		}
 	}
+	progress.Report(ctx, progress.Stage, "Waiting for workloads")
 	if err := waitForWorkloads(ctx, client, entry.Namespace, workloads(config.Lab), 1); err != nil {
 		return RuntimeStatus{}, fmt.Errorf("%w: environment workloads did not become ready: %w", cluster.ErrPrerequisite, err)
 	}
@@ -173,6 +180,7 @@ func (s *Service) Start(ctx context.Context, cwd, version string) (RuntimeStatus
 	if err := lease.SetEnvironmentState(entry.Namespace, true, true); err != nil {
 		return RuntimeStatus{}, err
 	}
+	progress.Report(ctx, progress.Stage, "Writing local configuration")
 	if err := generator.Write(filepath.Join(cwd, ".tripgo"), bundle); err != nil {
 		return RuntimeStatus{}, err
 	}
@@ -686,24 +694,33 @@ func verifyResourceOwnership(object *unstructured.Unstructured, lab int, namespa
 
 func waitForWorkloads(ctx context.Context, client dynamic.Interface, namespace string, items []workload, expected int64) error {
 	last := make(map[string]string, len(items))
+	lastSummary := ""
 	err := wait.PollUntilContextTimeout(ctx, time.Second, readinessLimit, true, func(ctx context.Context) (bool, error) {
 		ready := true
+		statuses := make([]string, 0, len(items))
 		for _, item := range items {
 			object, getErr := client.Resource(item.resource).Namespace(namespace).Get(ctx, item.name, metav1.GetOptions{})
 			if getErr != nil {
 				last[item.name] = "API read failed: " + getErr.Error()
+				statuses = append(statuses, item.name+" unavailable")
 				ready = false
 				continue
 			}
+			desired, _, _ := unstructured.NestedInt64(object.Object, "spec", "replicas")
+			readyReplicas, _, _ := unstructured.NestedInt64(object.Object, "status", "readyReplicas")
+			statuses = append(statuses, fmt.Sprintf("%s %d/%d", item.name, readyReplicas, desired))
 			if !workloadReady(object, expected) {
-				desired, _, _ := unstructured.NestedInt64(object.Object, "spec", "replicas")
 				observed, _, _ := unstructured.NestedInt64(object.Object, "status", "observedGeneration")
-				readyReplicas, _, _ := unstructured.NestedInt64(object.Object, "status", "readyReplicas")
 				last[item.name] = fmt.Sprintf("desired=%d ready=%d generation=%d observed=%d", desired, readyReplicas, object.GetGeneration(), observed)
 				ready = false
 				continue
 			}
 			delete(last, item.name)
+		}
+		summary := strings.Join(statuses, ", ")
+		if summary != lastSummary {
+			progress.Report(ctx, progress.Readiness, summary)
+			lastSummary = summary
 		}
 		return ready, nil
 	})

@@ -1,9 +1,9 @@
 #!/bin/sh
-# Remove only runtime state created by scripts/smoke-release-platform.
+# Remove only runtime state created by scripts/check-release-platform.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-state=${TRIPGO_RELEASE_SMOKE_STATE:-"$root/build/.release-smoke-state"}
+state=${TRIPGO_RELEASE_CHECK_STATE:-"$root/build/.release-check-state"}
 test -d "$state" || exit 0
 
 failed=0
@@ -36,7 +36,7 @@ else
 fi
 
 if test "$failed" -ne 0; then
-	echo "release smoke cleanup could not prove and remove owned runtime state; state retained at $state" >&2
+	echo "release platform cleanup could not prove and remove owned runtime state; state retained at $state" >&2
 	exit 1
 fi
 rm -rf "$state"

@@ -9,6 +9,7 @@ import (
 	"debug/elf"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +17,11 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/course-go-autumn-2026/tripgo-infra/internal/boundedio"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/catalog"
+	"github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/pushartifact"
+	"github.com/course-go-autumn-2026/tripgo-infra/internal/redact"
 )
 
 var immutableLocalReference = regexp.MustCompile(`^` + regexp.QuoteMeta(catalog.LocalPushImageRepository) + `@sha256:[0-9a-f]{64}$`)
@@ -28,15 +32,42 @@ type commandRunner interface {
 
 type execRunner struct{}
 
+const (
+	structuredCommandCaptureBytes = 1024 * 1024
+	streamedCommandCaptureBytes   = 16 * 1024
+)
+
 func (execRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	// #nosec G204 -- executable and arguments are fixed application inputs.
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	detail := strings.TrimSpace(string(output))
+	command := exec.CommandContext(ctx, name, args...)
+	streamed := len(args) > 0 && (args[0] == "build" || args[0] == "push")
+	captureLimit := structuredCommandCaptureBytes
+	if streamed {
+		captureLimit = streamedCommandCaptureBytes
+	}
+	stdout := boundedio.NewBuffer(captureLimit)
+	stderr := boundedio.NewBuffer(captureLimit)
+	stdoutActivity := progress.NewLineWriter(ctx)
+	stderrActivity := progress.NewLineWriter(ctx)
+	if streamed {
+		command.Stdout = io.MultiWriter(stdout, stdoutActivity)
+		command.Stderr = io.MultiWriter(stderr, stderrActivity)
+	} else {
+		command.Stdout = stdout
+		command.Stderr = stderr
+	}
+	err := command.Run()
+	_ = stdoutActivity.Close()
+	_ = stderrActivity.Close()
+	detail := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
 	if err != nil {
 		if detail == "" {
 			return "", fmt.Errorf("run %s: %w", name, err)
 		}
-		return "", fmt.Errorf("run %s: %s: %w", name, detail, err)
+		return "", fmt.Errorf("run %s: %s: %w", name, redact.TerminalText(detail, 16*1024), err)
+	}
+	if !streamed && (stdout.Truncated() || stderr.Truncated()) {
+		return "", fmt.Errorf("run %s: command output exceeded %d bytes", name, structuredCommandCaptureBytes)
 	}
 	return detail, nil
 }
@@ -52,6 +83,7 @@ func NewProvider() *Provider { return &Provider{runner: execRunner{}, goarch: ru
 
 // Ensure extracts, builds and pushes the image and returns Docker's verified RepoDigest.
 func (p *Provider) Ensure(ctx context.Context) (string, error) {
+	progress.Report(ctx, progress.Stage, "Preparing Push Service image")
 	if p.goarch != "amd64" && p.goarch != "arm64" {
 		return "", fmt.Errorf("unsupported Push Service image architecture %q", p.goarch)
 	}
@@ -80,9 +112,11 @@ func (p *Provider) Ensure(ctx context.Context) (string, error) {
 	_, _ = contentHash.Write(pushartifact.Dockerfile())
 	_, _ = contentHash.Write(binary)
 	tag := fmt.Sprintf("%s:embedded-%x", catalog.LocalPushImageRepository, contentHash.Sum(nil)[:12])
+	progress.Report(ctx, progress.Stage, "Building Push Service image")
 	if _, err := p.runner.Run(ctx, "docker", "build", "--platform", "linux/"+p.goarch, "--tag", tag, filepath.Clean(directory)); err != nil {
 		return "", fmt.Errorf("build embedded Push Service image: %w", err)
 	}
+	progress.Report(ctx, progress.Stage, "Pushing Push Service image")
 	if _, err := p.runner.Run(ctx, "docker", "push", tag); err != nil {
 		return "", fmt.Errorf("push embedded Push Service image to managed registry: %w", err)
 	}

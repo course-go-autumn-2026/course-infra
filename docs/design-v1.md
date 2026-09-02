@@ -221,7 +221,7 @@ provider и встраивает OpenAPI, proto и source manifest; cross-build 
 exact content каждого из четырёх CLI, runtime provider проверяет manifest SHA, а
 staging очищается trap-ом. Push binary не дублирует source contracts без runtime
 причины: self-contained публикуемым артефактом является CLI, а Push runtime уже
-содержит compiled handlers/descriptors. Workflow `.github/workflows/release-smoke-platforms.yml` существует, но ещё не
+содержит compiled handlers/descriptors. Workflow `.github/workflows/release-platform-check.yml` существует, но ещё не
 запускался и сам по себе не доказывает native execution. Его checkout обязан
 использовать initialized pinned submodule и не обращаться к плавающей ветке;
 native Linux и чистая внешняя машина остаются непроверенными release gates.
@@ -254,7 +254,7 @@ registry, получает digest и передаёт immutable reference ген
 `cluster stop` удаляет и kind cluster, и принадлежащий CLI registry. Порт 5001
 проверяется вместе с остальными host ports. Remote OCI Push Service не
 публикуется; перед Kubernetes-интеграцией обязательны contract tests embedded
-binary и local build/push/run smoke tests на amd64/arm64.
+binary и local build/push/run integration checks на amd64/arm64.
 
 Этап 12 реализует двухфазный embedding и локальные archives с `SHA256SUMS`.
 GitHub Release и любая иная публикация не выполняются без отдельного решения.

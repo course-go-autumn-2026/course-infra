@@ -1,4 +1,4 @@
-name: native four-platform release smoke (no publish)
+name: native four-platform release check (no publish)
 
 on:
   workflow_dispatch:
@@ -9,13 +9,13 @@ on:
       - 'internal/pushartifact/**'
       - 'scripts/**'
       - 'Makefile'
-      - '.github/workflows/release-smoke-platforms.yml'
+      - '.github/workflows/release-platform-check.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-smoke-${{ github.workflow }}-${{ github.ref }}
+  group: release-check-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,17 +44,17 @@ jobs:
         with:
           go-version: '1.24.x'
           cache: true
-      - name: Install smoke prerequisites
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq postgresql-client
+      - name: Install runtime-check prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
       - name: Build deterministic local-only release
         run: |
           make proto-tools-install
           make release VERSION=ci COMMIT="$(git rev-parse HEAD)" SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
       - name: Validate final archive through Docker and managed registry
-        run: make release-platform-smoke
+        run: make release-platform-check
       - name: Safe runtime cleanup
         if: always()
-        run: ./scripts/cleanup-release-smoke
+        run: ./scripts/cleanup-release-check
 
   native-darwin:
     name: darwin/${{ matrix.arch }}
@@ -83,8 +83,7 @@ jobs:
           cache: true
       - name: Install and start native Docker engine
         run: |
-          brew install colima docker jq libpq
-          echo "$(brew --prefix libpq)/bin" >> "$GITHUB_PATH"
+          brew install colima docker jq
           colima start --cpu 4 --memory 10 --disk 40
           docker version
       - name: Confirm native runner architecture
@@ -98,9 +97,9 @@ jobs:
           make proto-tools-install
           make release VERSION=ci COMMIT="$(git rev-parse HEAD)" SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
       - name: Validate final archive through Docker and managed registry
-        run: make release-platform-smoke
+        run: make release-platform-check
       - name: Safe runtime cleanup
         if: always()
         run: |
-          ./scripts/cleanup-release-smoke
+          ./scripts/cleanup-release-check
           colima delete --force >/dev/null 2>&1 || true

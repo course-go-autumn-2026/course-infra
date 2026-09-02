@@ -36,7 +36,7 @@ while bootstrapping an unborn checkout, but it is not a release provenance gate.
 9. deletion of raw intermediates and both ignored staging directories; any failed
    build or post-build cleanup/archive audit removes the entire release directory.
 
-The only retained files are four `tar.gz` archives, `SHA256SUMS`, and `RELEASE_NOTES.md`. Each archive contains exactly `tripgoctl` and `RELEASE_NOTES.md`; source, tests, smoke scripts, rootfs, contracts as separate files, and build staging are excluded. The CLI itself directly embeds the verified canonical contract bytes because `go:embed` cannot follow the canonical symlinks.
+The only retained files are four `tar.gz` archives, `SHA256SUMS`, and `RELEASE_NOTES.md`. Each archive contains exactly `tripgoctl` and `RELEASE_NOTES.md`; source, tests, integration scripts, rootfs, contracts as separate files, and build staging are excluded. The CLI itself directly embeds the verified canonical contract bytes because `go:embed` cannot follow the canonical symlinks.
 
 After a separately approved GitHub Release publication, install the matching archive with:
 
@@ -44,7 +44,15 @@ After a separately approved GitHub Release publication, install the matching arc
 ./scripts/install-tripgoctl v1.0.0
 ```
 
-The POSIX installer supports macOS/Linux on `amd64`/`arm64`, downloads both the
+For an archive already present locally, set
+`TRIPGOCTL_RELEASE_DIR=build/release`. This POSIX script can be distributed and
+run directly without Make.
+
+In a source checkout, `make install` has different semantics: it builds a full
+self-contained CLI from the current sources and installs that newly built
+binary. Use `INSTALL_DIR="$HOME/.local/bin"` to override its destination.
+
+The POSIX release installer supports macOS/Linux on `amd64`/`arm64`, downloads both the
 archive and `SHA256SUMS` over HTTPS, and verifies the exact archive entry before
 installation. Set `TRIPGOCTL_RELEASE_DIR=build/release` to install from local
 release output without network access. The default destination is writable
@@ -55,13 +63,13 @@ SBOM and provenance are deferred until a pinned generator can produce output wit
 
 ## Native four-platform Docker gate
 
-`make release-platform-smoke` selects the final archive matching the native Darwin/Linux amd64/arm64 host. It extracts that archive and runs lab 3 through the real CLI, including its owned registry, local Push image build/push, immutable RepoDigest, Kubernetes pull, and HTTP/gRPC behavior. A non-destructive preflight refuses to run when the fixed-name cluster or registry already exists. Cleanup uses the CLI identity gate and removes only Push image references absent from the preflight inventory, preserving developer-owned state. The four native jobs in `.github/workflows/release-smoke-platforms.yml` are defined for both architectures on Linux and Darwin without publishing artifacts. They have not run from the current repository state: the definition is not execution evidence. Native Linux and a clean external machine therefore remain unverified release gates.
+`make release-platform-check` selects the final archive matching the native Darwin/Linux amd64/arm64 host. It extracts that archive and runs the lab 3 runtime integration through the real CLI, including its owned registry, local Push image build/push, immutable RepoDigest, Kubernetes pull, and HTTP/gRPC behavior. A non-destructive preflight refuses to run when the fixed-name cluster or registry already exists. Cleanup uses the CLI identity gate and removes only Push image references absent from the preflight inventory, preserving developer-owned state. The four native jobs in `.github/workflows/release-platform-check.yml` are defined for both architectures on Linux and Darwin without publishing artifacts. They have not run from the current repository state: the definition is not execution evidence. Native Linux and a clean external machine therefore remain unverified release gates.
 
 The release build separately proves exact architecture-matched Push ELF, Dockerfile, and canonical contract inclusion in every final CLI before archiving, then proves each archive contains that exact verified CLI. Native jobs ensure that this byte-level gate is complemented by actual execution on all four supported CLI platforms.
 
 ## Cleanup audit
 
-After a local Docker smoke, run:
+After a local Docker integration, run:
 
 ```bash
 make release-audit
@@ -74,7 +82,7 @@ The audit rejects package-local staging, project `.env`/non-golden `.tripgo`, te
 1. Update one kind, Kubernetes/node, or catalog OCI pin at a time.
 2. Verify the artifact digest for both `linux/amd64` and `linux/arm64`; never replace a digest with a mutable tag.
 3. Update tests and the relevant catalog/design document.
-4. Run `make verify`, the lifecycle smoke affected by the component, `make release-repro-check`, and native Linux release smoke on both architectures.
+4. Run `make verify`, the integration gate affected by the component, `make release-repro-check`, and the native Linux release platform check on both architectures.
 5. Review generated `RELEASE_NOTES.md` inventory before any separately approved publication process.
 
 Canonical Push contracts are updated only by advancing `third_party/homework`, then running `make contract-sync` and protobuf generation. `api/openapi/push-service.openapi.yaml` and `api/proto/push/v1/push.proto` must remain relative symlinks; tracked fallback copies are forbidden.

@@ -18,9 +18,9 @@ Docker
         localhost:5001 → http://tripgo-local-registry:5000
 ```
 
-Registry подключается к Docker network `kind` после создания cluster. Проверено
-smoke-тестом: image, запушенный в `localhost:5001`, успешно запускается в pod по
-локальному digest.
+Registry подключается к Docker network `kind` после создания cluster. Runtime
+integration проверяет, что image, запушенный в `localhost:5001`, успешно
+запускается в pod по локальному digest.
 
 ## Helper supply chain
 
@@ -74,6 +74,6 @@ foreign/mismatched resources возвращают exit code 4.
   mappings, lifecycle state machine, Docker unavailable, multi-port conflicts;
 - реальное создание, status и повторный start;
 - реальный registry push → kind pull by digest;
-- NodePort smoke через по одному mapping каждого lab:
+- NodePort integration через по одному mapping каждого lab:
   `21081`, `22081`, `23081`, `24081`, `25081`;
 - реальный stop, повторный stop и конфликт `127.0.0.1:5001` с exit code 4.

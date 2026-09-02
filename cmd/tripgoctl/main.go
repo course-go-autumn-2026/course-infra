@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/buildinfo"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/cli"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/contractasset"
@@ -34,7 +36,11 @@ func main() {
 			info, statErr := os.Stdin.Stat()
 			return statErr == nil && info.Mode()&os.ModeCharDevice != 0
 		},
-		Build: buildinfo.Current("tripgoctl"),
+		IsStderrTerminal: func() bool {
+			return term.IsTerminal(int(os.Stderr.Fd()))
+		},
+		ProgressCacheDirectory: os.UserCacheDir,
+		Build:                  buildinfo.Current("tripgoctl"),
 	})
 	if err == nil {
 		signalContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

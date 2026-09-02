@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/catalog"
+	"github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 )
 
 const failedStartCleanupLimit = 15 * time.Second
@@ -120,6 +121,7 @@ func (s *Service) lockPath() string  { return filepath.Join(s.configDir, "cluste
 
 // Start creates or verifies the managed registry and kind cluster.
 func (s *Service) Start(ctx context.Context) (Status, error) {
+	progress.Report(ctx, progress.Stage, "Checking local prerequisites")
 	lock, err := acquireLock(s.lockPath())
 	if err != nil {
 		return Status{}, fmt.Errorf("%w: %v", ErrConflict, err)
@@ -132,6 +134,7 @@ func (s *Service) Start(ctx context.Context) (Status, error) {
 	if err := s.checkDocker(ctx); err != nil {
 		return Status{}, err
 	}
+	progress.Report(ctx, progress.Stage, "Preparing kind")
 	kindPath, err := s.download.EnsureKind(ctx, s.cacheDir, s.goos, s.goarch)
 	if err != nil {
 		return Status{}, fmt.Errorf("%w: %w", ErrPrerequisite, err)
@@ -145,6 +148,7 @@ func (s *Service) Start(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	if contains(clusters, Name) {
+		progress.Report(ctx, progress.Stage, "Verifying existing cluster")
 		return s.verifyExisting(ctx, configHash)
 	}
 
@@ -161,6 +165,7 @@ func (s *Service) Start(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("create cluster identity: %w", err)
 	}
+	progress.Report(ctx, progress.Stage, "Starting local registry")
 	if err := s.startRegistry(ctx, clusterID); err != nil {
 		return Status{}, err
 	}
@@ -187,6 +192,7 @@ func (s *Service) Start(ctx context.Context) (Status, error) {
 	if err := configFile.Close(); err != nil {
 		return Status{}, err
 	}
+	progress.Report(ctx, progress.Stage, "Creating Kubernetes cluster")
 	if _, err := s.runner.Run(ctx, kindPath, "create", "cluster", "--config", configPath, "--wait", "120s"); err != nil {
 		return Status{}, fmt.Errorf("%w: create kind cluster: %w", ErrPrerequisite, err)
 	}
@@ -199,6 +205,7 @@ func (s *Service) Start(ctx context.Context) (Status, error) {
 		s.runFailedStartCleanup(kindPath, "delete", "cluster", "--name", Name)
 		return Status{}, fmt.Errorf("write cluster identity marker: %w", err)
 	}
+	progress.Report(ctx, progress.Stage, "Verifying Kubernetes access")
 	if _, err := s.accessKubernetes(ctx, kindPath, clusterID, true); err != nil {
 		s.runFailedStartCleanup(kindPath, "delete", "cluster", "--name", Name)
 		return Status{}, err
@@ -551,14 +558,22 @@ func (s *Service) warnResources(ctx context.Context) {
 	if err == nil {
 		bytes, parseErr := strconv.ParseInt(memory, 10, 64)
 		if parseErr == nil && bytes < 6*1024*1024*1024 {
-			_, _ = fmt.Fprintf(s.stderr, "Warning: Docker has %.1f GiB memory; full labs may require at least 6 GiB.\n", float64(bytes)/(1024*1024*1024))
+			message := fmt.Sprintf("Warning: Docker has %.1f GiB memory; full labs may require at least 6 GiB.", float64(bytes)/(1024*1024*1024))
+			progress.Report(ctx, progress.Warning, message)
+			if _, attached := progress.ReporterFromContext(ctx); !attached {
+				_, _ = fmt.Fprintln(s.stderr, message)
+			}
 		}
 	}
 	var stats syscall.Statfs_t
 	if err := syscall.Statfs(s.cacheDir, &stats); err == nil {
 		free := uint64(stats.Bavail) * uint64(stats.Bsize)
 		if free < 10*1024*1024*1024 {
-			_, _ = fmt.Fprintf(s.stderr, "Warning: %.1f GiB free near the tripgoctl cache; image pulls may require more disk.\n", float64(free)/(1024*1024*1024))
+			message := fmt.Sprintf("Warning: %.1f GiB free near the tripgoctl cache; image pulls may require more disk.", float64(free)/(1024*1024*1024))
+			progress.Report(ctx, progress.Warning, message)
+			if _, attached := progress.ReporterFromContext(ctx); !attached {
+				_, _ = fmt.Fprintln(s.stderr, message)
+			}
 		}
 	}
 }

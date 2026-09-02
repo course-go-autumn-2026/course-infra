@@ -1,4 +1,4 @@
-// Command otlp-grpc-smoke sends one deterministic trace through an OTLP/gRPC endpoint.
+// Command otlp-grpc-client sends one deterministic trace through an OTLP/gRPC endpoint.
 package main
 
 import (
@@ -19,8 +19,8 @@ import (
 
 func main() {
 	endpoint := flag.String("endpoint", "localhost:22317", "OTLP/gRPC endpoint")
-	service := flag.String("service", "tripgo-stage6-grpc-smoke", "service.name resource attribute")
-	spanName := flag.String("span", "stage6-grpc-trace", "span name")
+	service := flag.String("service", "tripgo-integration-grpc", "service.name resource attribute")
+	spanName := flag.String("span", "integration-grpc-trace", "span name")
 	flag.Parse()
 
 	if err := send(*endpoint, *service, *spanName); err != nil {

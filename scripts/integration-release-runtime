@@ -2,15 +2,15 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-tripgoctl=${TRIPGOCTL:-"$root/build/bin/tripgoctl-stage8"}
-for command in curl docker go grep jq psql; do
-	command -v "$command" >/dev/null 2>&1 || { echo "stage8 smoke requires $command" >&2; exit 3; }
+tripgoctl=${TRIPGOCTL:-"$root/build/bin/tripgoctl-embedded"}
+for command in curl docker go grep jq; do
+	command -v "$command" >/dev/null 2>&1 || { echo "release runtime integration requires $command" >&2; exit 3; }
 done
 if "$tripgoctl" cluster status >/dev/null 2>&1; then
-	echo "stage8 smoke requires no existing tripgo-local cluster" >&2
+	echo "release runtime integration requires no existing tripgo-local cluster" >&2
 	exit 4
 fi
-work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-stage8-smoke.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-release-runtime-integration.XXXXXX")
 cleanup() {
 	"$tripgoctl" cluster stop --yes >/dev/null 2>&1 || true
 	rm -rf "$work"
@@ -21,7 +21,7 @@ schema_version = 1
 lab = 3
 components = ["postgres", "observability", "push"]
 EOF
-request='{"request_id":"stage8-http","recipient_id":"8860b315-ec86-42eb-a17c-7c163d721ff5","kind":"REQUEST_POSITION","data":{"trip_id":"1f0a9c62-4a1c-4f2e-9d33-2a4bb0f0b111"}}'
+request='{"request_id":"release-runtime-http","recipient_id":"8860b315-ec86-42eb-a17c-7c163d721ff5","kind":"REQUEST_POSITION","data":{"trip_id":"1f0a9c62-4a1c-4f2e-9d33-2a4bb0f0b111"}}'
 post_status() {
 	url=$1 payload=$2
 	curl -sS -o "$work/body" -D "$work/headers" -w '%{http_code}' -H 'Content-Type: application/json' --data-binary "$payload" "$url"
@@ -42,12 +42,12 @@ post_status() {
 	docker exec tripgo-local-control-plane crictl inspecti "$push_ref" >/dev/null
 	curl -fsS http://localhost:23809/health >/dev/null
 	test "$(post_status http://localhost:23809/api/v1/push "$request")" = 202
-	(cd "$root" && go run ./tests/push-grpc-smoke -endpoint localhost:23905 -expect success)
+	(cd "$root" && go run ./tests/integration/push-grpc-client -endpoint localhost:23905 -expect success)
 
 	test "$(post_status http://localhost:23809/admin/behaviour '{"fail_rate":1}')" = 200
 	test "$(post_status http://localhost:23809/api/v1/push "$request")" = 503
 	test "$(post_status http://localhost:23809/admin/behaviour '{"fail_rate":0,"latency_ms":1000}')" = 200
-	(cd "$root" && go run ./tests/push-grpc-smoke -endpoint localhost:23905 -timeout 50ms -expect deadline)
+	(cd "$root" && go run ./tests/integration/push-grpc-client -endpoint localhost:23905 -timeout 50ms -expect deadline)
 	test "$(post_status http://localhost:23809/admin/behaviour '{"latency_ms":0,"rate_limit_rps":1}')" = 200
 	test "$(post_status http://localhost:23809/api/v1/push "$request")" = 202
 	rate_status=202
@@ -74,4 +74,4 @@ post_status() {
 # The implementation has no configurable repository and the registry contains only the local name.
 curl -fsS http://localhost:5001/v2/_catalog | jq -e '.repositories | all(. == "tripgo-push-service")' >/dev/null
 
-echo "stage8 lab 3 Push Service integration smoke passed"
+echo "release runtime integration passed"
