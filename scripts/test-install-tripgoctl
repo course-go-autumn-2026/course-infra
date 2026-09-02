@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tripgoctl-installer-test.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+case "$(uname -s)" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    *) echo "installer fixture requires macOS or Linux" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+    x86_64|amd64) arch=amd64 ;;
+    arm64|aarch64) arch=arm64 ;;
+    *) echo "installer fixture requires amd64 or arm64" >&2; exit 1 ;;
+esac
+
+version=v1.2.3
+release=$tmp/release
+payload=$tmp/payload
+install_dir=$tmp/bin
+mkdir -p "$release" "$payload"
+printf '#!/bin/sh\necho fixture-tripgoctl\n' > "$payload/tripgoctl"
+chmod 0755 "$payload/tripgoctl"
+archive="tripgoctl_${version}_${os}_${arch}.tar.gz"
+tar -czf "$release/$archive" -C "$payload" tripgoctl
+if command -v sha256sum >/dev/null 2>&1; then
+    digest=$(sha256sum "$release/$archive" | awk '{print $1}')
+else
+    digest=$(shasum -a 256 "$release/$archive" | awk '{print $1}')
+fi
+printf '%s  %s\n' "$digest" "$archive" > "$release/SHA256SUMS"
+
+PATH="$install_dir:$PATH" TRIPGOCTL_RELEASE_DIR="$release" \
+    "$root/scripts/install-tripgoctl" --install-dir "$install_dir" "$version"
+[ "$("$install_dir/tripgoctl")" = fixture-tripgoctl ]
+[ -x "$install_dir/tripgoctl" ]
+
+printf 'do-not-replace\n' > "$install_dir/tripgoctl"
+printf '%064d  %s\n' 0 "$archive" > "$release/SHA256SUMS"
+if PATH="$install_dir:$PATH" TRIPGOCTL_RELEASE_DIR="$release" \
+    "$root/scripts/install-tripgoctl" --install-dir "$install_dir" "$version" >/dev/null 2>&1; then
+    echo "installer accepted an invalid checksum" >&2
+    exit 1
+fi
+[ "$(cat "$install_dir/tripgoctl")" = do-not-replace ]
+
+if find "$install_dir" -name '.tripgoctl.new.*' -print | grep -q .; then
+    echo "installer left a temporary destination file" >&2
+    exit 1
+fi
+
+echo "tripgoctl installer fixture passed"

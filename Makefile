@@ -17,7 +17,7 @@ LDFLAGS := -s -w -X $(BUILDINFO_PACKAGE).version=$(VERSION) -X $(BUILDINFO_PACKA
 
 .PHONY: all build build-tripgoctl build-push-service cross-build container-build \
         test test-race vet fmt fmt-check lint lint-install proto-tools-install \
-        proto-generate proto-check contract-sync contract-check fixture-tests verify \
+        proto-generate proto-check contract-sync contract-check fixture-tests installer-test verify \
         stage5-smoke stage6-smoke stage7-smoke stage8-smoke stage9-smoke stage10-smoke stage11-smoke \
         build-tripgoctl-stage8 build-tripgoctl-stage9 build-tripgoctl-stage10 \
         release release-repro-check release-audit release-platform-smoke clean
@@ -117,6 +117,10 @@ fixture-tests:
 	./scripts/test-proto-generate
 	./scripts/test-release-provenance
 	./scripts/test-release-failure-cleanup
+	./scripts/test-install-tripgoctl
+
+installer-test:
+	./scripts/test-install-tripgoctl
 
 verify: fmt-check vet test-race lint fixture-tests proto-check contract-check cross-build container-build
 

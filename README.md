@@ -57,7 +57,28 @@ make release-repro-check VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" \
   SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 ```
 
-Локальная сборка CLI:
+## Установка CLI
+
+Проверенный release устанавливается на macOS/Linux (`amd64`/`arm64`) скриптом,
+который выбирает нужный архив и обязательно сверяет его по `SHA256SUMS`:
+
+```bash
+./scripts/install-tripgoctl v1.0.0
+tripgoctl version
+```
+
+По умолчанию используется GitHub Releases. Для локально собранного или
+переданного преподавателем набора файлов:
+
+```bash
+TRIPGOCTL_RELEASE_DIR="$PWD/build/release" \
+  ./scripts/install-tripgoctl --install-dir "$HOME/.local/bin" v1.0.0
+```
+
+Скрипт не изменяет shell profiles и не использует `sudo`. Если выбранного
+каталога нет в `PATH`, он печатает точную команду `export PATH=...`.
+
+Локальная development-сборка CLI:
 
 ```bash
 make build-tripgoctl

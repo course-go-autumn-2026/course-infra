@@ -38,6 +38,19 @@ while bootstrapping an unborn checkout, but it is not a release provenance gate.
 
 The only retained files are four `tar.gz` archives, `SHA256SUMS`, and `RELEASE_NOTES.md`. Each archive contains exactly `tripgoctl` and `RELEASE_NOTES.md`; source, tests, smoke scripts, rootfs, contracts as separate files, and build staging are excluded. The CLI itself directly embeds the verified canonical contract bytes because `go:embed` cannot follow the canonical symlinks.
 
+After a separately approved GitHub Release publication, install the matching archive with:
+
+```bash
+./scripts/install-tripgoctl v1.0.0
+```
+
+The POSIX installer supports macOS/Linux on `amd64`/`arm64`, downloads both the
+archive and `SHA256SUMS` over HTTPS, and verifies the exact archive entry before
+installation. Set `TRIPGOCTL_RELEASE_DIR=build/release` to install from local
+release output without network access. The default destination is writable
+`/usr/local/bin`, otherwise `$HOME/.local/bin`; `--install-dir` overrides it.
+The script never invokes `sudo` or edits shell profiles.
+
 SBOM and provenance are deferred until a pinned generator can produce output without wall-clock time, host paths, or environment-dependent metadata.
 
 ## Native four-platform Docker gate
