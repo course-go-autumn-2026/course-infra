@@ -130,10 +130,13 @@ if (cd "$work/lab2" && "$tripgoctl" environment status); then
 fi
 (cd "$work/lab2" && "$tripgoctl" environment start >/dev/null)
 
-# Grafana must point at the namespace-local Prometheus datasource.
-datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Prometheus)
-printf '%s' "$datasource" | grep -F 'http://prometheus:9090' >/dev/null
-datasource_uid=$(printf '%s' "$datasource" | jq -er .uid)
+# Grafana must expose both namespace-local telemetry datasources without login.
+prometheus_datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Prometheus)
+printf '%s' "$prometheus_datasource" | grep -F 'http://prometheus:9090' >/dev/null
+prometheus_datasource_uid=$(printf '%s' "$prometheus_datasource" | jq -er .uid)
+jaeger_datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Jaeger)
+printf '%s' "$jaeger_datasource" | grep -F 'http://jaeger:16686' >/dev/null
+jaeger_datasource_uid=$(printf '%s' "$jaeger_datasource" | jq -er .uid)
 
 # Exact topic shape, automatic repair, and Console API visibility.
 assert_topics tripgo-lab-04
@@ -228,7 +231,8 @@ for lab in 2 4 5; do
 		retry_trace_count "http://localhost:$((base+686))/api/traces?service=integration-lab${marker}-only&operation=trace-lab-${marker}-only&limit=20" "$expected"
 	done
 done
-retry_query_count "http://localhost:22300/api/datasources/proxy/uid/$datasource_uid/api/v1/query?query=integration_lab2_only_metric" 1
+retry_query_count "http://localhost:22300/api/datasources/proxy/uid/$prometheus_datasource_uid/api/v1/query?query=integration_lab2_only_metric" 1
+retry_trace_count "http://localhost:22300/api/datasources/proxy/uid/$jaeger_datasource_uid/api/traces?service=integration-lab2-only&operation=trace-lab-2-only&limit=20" 1
 
 # Every old owned pod UID disappears and a complete disjoint ready UID set
 # replaces it while all host endpoints and connect output remain stable.

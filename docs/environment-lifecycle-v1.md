@@ -21,11 +21,15 @@
    Namespace, конфигурацию, хранилища, Deployments и Services server-side apply
    manager-ом `tripgoctl`, без force conflicts;
 8. ждёт observed generation и updated/ready/available replicas всех workloads;
-9. синхронизирует known/running state и пишет `.tripgo/`; `.env` устанавливается
-   atomic rename после fsync bytes и затем fsync родительского каталога.
+9. синхронизирует known/running state и атомарно обновляет `.tripgo/rendered`;
+   локальный lock не хранится, `.env` устанавливается atomic rename после fsync
+   bytes и затем fsync родительского каталога.
 
 Lab 1 публикует PostgreSQL. Lab 2 дополнительно публикует OTel HTTP/gRPC,
 Grafana, Jaeger и Prometheus и проверяет namespace-local telemetry Services.
+Grafana доступна без авторизации с локальной ролью Admin; provisioned datasources
+`Prometheus` и `Jaeger` указывают на сервисы того же namespace. Прямая страница
+входа также включена для диагностики, локальные credentials — `admin` / `admin`.
 Lab 3 дополнительно публикует Push HTTP/admin и gRPC на фиксированных host ports
 `23809` и `23905`; Deployment закреплён по
 `localhost:5001/tripgo-push-service@sha256:...`. Labs 4–5 добавляют собственные
@@ -45,7 +49,7 @@ ports. Постоянный Deployment-reconciler читает desired topics Co
 - после фактического рестарта Push pod настройки предсказуемо возвращаются к env
   defaults;
 - `environment reset` требует точное `yes` или `--yes`, удаляет только owned
-  namespace и распознанные generated `.env`/`.tripgo`;
+  namespace, generated `.env` и `.tripgo/rendered`, сохраняя неизвестные файлы;
 - `environment list` обнаруживает owned namespaces по labels и cluster identity,
   показывает полный workload-состав и сохраняет повреждённые owned environments
   в списке со state `degraded`;
@@ -59,9 +63,7 @@ ports. Постоянный Deployment-reconciler читает desired topics Co
 
 Lifecycle не использует текущий kube context, не принимает image override из
 `environment.toml`, не публикует Push Service во внешний registry, не форсирует
-SSA conflicts и не удаляет чужие ресурсы. Generated-directory ownership требует
-regular non-symlink lock с совпадающими lab, namespace и cluster identity.
-Missing prerequisites используют exit code `3`, ownership/SSA/user-file
+SSA conflicts и не удаляет чужие ресурсы. Missing prerequisites используют exit code `3`, ownership/SSA/user-file
 conflicts — exit code `4`.
 
 ## Reproducible checks

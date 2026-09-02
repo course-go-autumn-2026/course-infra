@@ -358,6 +358,9 @@ func newConnectCommand(deps Dependencies) *cobra.Command {
 			console, _ := catalog.PortByName(status.Lab, "redpanda-console")
 			fmt.Fprintf(&output, "Kafka       localhost:%d\nConsole     http://localhost:%d\n", kafka.HostPort, console.HostPort)
 		}
+		if status.Lab >= 2 {
+			fmt.Fprintln(&output, "\nCREDENTIALS  USER   PASSWORD\nGrafana      admin  admin")
+		}
 		fmt.Fprintf(&output, "\nDATABASE_URL=%s\npsql %q\n", databaseURL, databaseURL)
 		if status.Lab >= 3 {
 			fmt.Fprintln(&output, "tripgoctl environment logs push-service --follow")

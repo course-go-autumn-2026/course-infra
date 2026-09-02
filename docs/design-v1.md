@@ -181,9 +181,10 @@ labels и cluster identity annotation. CLI не удаляет отдельны�
 пользовательском `.env` операция завершается до применения Kubernetes-изменений,
 чтобы исключить готовую инфраструктуру без пригодного config-файла.
 
-`.tripgo/rendered` и `.tripgo/environment.lock` имеют тот же ownership принцип.
-Lock содержит version/schema/lab/namespace, image digests, manifest hashes и
-cluster identity. Секреты не входят в deterministic manifest fixtures.
+`.tripgo/rendered` — диагностическая проекция последнего desired state и
+атомарно обновляется при каждом `environment start`; локальный lock не хранится.
+Фактические ownership, cluster identity, image digests и readiness проверяются
+по Kubernetes API. Неизвестные соседние файлы в `.tripgo` сохраняются.
 
 Глобальный state хранится в OS user cache/config directory и содержит kind
 version, cluster identity, config hash и известные namespace. Kubernetes

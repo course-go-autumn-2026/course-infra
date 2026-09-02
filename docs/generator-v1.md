@@ -11,7 +11,7 @@
    Push image reference.
 
 Время, случайность, cwd и порядок TOML maps не являются входами. Custom `[env]`
-не входит в manifests/lock и не может утечь туда; она будет использована только
+не входит в manifests и не может утечь туда; она будет использована только
 writer-ом `.env` на этапе 5.
 
 Push Service строится локально из embedded Dockerfile + Linux binary и никогда
@@ -32,17 +32,13 @@ Push Service строится локально из embedded Dockerfile + Linux 
     push.yaml           # lab >= 3
     redpanda.yaml       # lab >= 4
     topics.yaml         # lab >= 4
-  environment.lock
 ```
 
 Порядок bundle всегда соответствует списку выше. `Write` создаёт private
-каталоги `0700` и файлы `0600`, выполняет same-parent directory swap, удаляет
-stale generated files и отказывается заменять каталог без точного marker в
-`environment.lock`.
-
-Lock фиксирует schema/lab/namespace, generator version, cluster identity,
-реально использованные immutable image references и SHA-256 каждого manifest.
-Generated credentials/custom env в lock отсутствуют.
+каталоги `0700` и файлы `0600`, атомарно заменяет `.tripgo/rendered`, удаляет
+stale generated manifests и сохраняет неизвестные соседние файлы в `.tripgo`.
+Локальный lock не создаётся: каждый start всегда строит desired manifests
+заново, а ownership и фактическое состояние проверяются по Kubernetes API.
 
 ## Kubernetes resources
 
@@ -83,10 +79,10 @@ Golden directories: `tests/golden/lab-{1..5}/.tripgo`. Число ресурсо
 - две генерации без diff;
 - синтаксис каждого multi-document YAML;
 - ownership/namespace annotations;
-- manifest hashes в lock;
-- отсутствие custom env в manifests/lock;
+- отсутствие custom env в manifests;
 - отказ от mutable/отсутствующего либо не-local Push image;
-- repeatable writer, stale cleanup и защиту чужого `.tripgo`.
+- repeatable writer, stale cleanup, защиту от symlinked output и сохранение
+  неизвестных файлов в `.tripgo`.
 
 Обновление golden является явной операцией:
 

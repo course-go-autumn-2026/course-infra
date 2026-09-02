@@ -37,7 +37,8 @@ post_status() {
 	"$tripgoctl" connect | grep -F 'Push gRPC   localhost:23905' >/dev/null
 	grep -F 'PUSH_HTTP_URL=http://localhost:23809' .env >/dev/null
 
-	push_ref=$(sed -n '/name = "push-service"/{n;s/reference = "\(.*\)"/\1/p;}' .tripgo/environment.lock)
+	push_ref=$(docker exec tripgo-local-control-plane kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+		-n tripgo-lab-03 get deployment push-service -o jsonpath='{.spec.template.spec.containers[0].image}')
 	printf '%s\n' "$push_ref" | grep -E '^localhost:5001/tripgo-push-service@sha256:[0-9a-f]{64}$' >/dev/null
 	docker exec tripgo-local-control-plane crictl inspecti "$push_ref" >/dev/null
 	curl -fsS http://localhost:23809/health >/dev/null
