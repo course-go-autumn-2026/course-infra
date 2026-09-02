@@ -15,6 +15,7 @@ import (
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/cluster"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/environment"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/lab"
+	progressapi "github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 )
 
 func newDoctorCommand(deps Dependencies) *cobra.Command {
@@ -78,14 +79,15 @@ func newClusterCommand(deps Dependencies) *cobra.Command {
 	start := &cobra.Command{
 		Use: "start", Short: "Create or reconcile the local cluster", Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			status, err := deps.Cluster.Start(cmd.Context())
-			if err != nil {
+			session := newProgressSession(cmd.ErrOrStderr(), deps.IsStderrTerminal(), deps.ProgressCacheDirectory, "cluster start")
+			status, operationErr := deps.Cluster.Start(session.context(cmd.Context()))
+			if err := session.finish(operationErr); err != nil {
 				return err
 			}
 			if err := printClusterStatus(cmd, status); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), "\nNext: cd <lab-directory> && tripgoctl environment start")
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "\nNext: cd <lab-directory> && tripgoctl environment start")
 			return err
 		},
 	}
@@ -184,31 +186,36 @@ func newEnvironmentCommand(deps Dependencies) *cobra.Command {
 	command := &cobra.Command{Use: "environment", Short: "Manage isolated lab environments", Args: noArgs}
 
 	start := &cobra.Command{Use: "start", Short: "Create or reconcile the current lab environment", Args: noArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		cwd, err := environmentWorkingDirectory(deps)
-		if err != nil {
-			return err
-		}
-		labNumber, err := deps.Environment.ConfiguredLab(cwd)
-		if err != nil {
-			return err
-		}
-		clusterStatus, err := deps.Cluster.Inspect(cmd.Context())
-		if err != nil {
-			return err
-		}
-		for _, warning := range deps.Cluster.EnvironmentResourceWarnings(cmd.Context(), labNumber, len(clusterStatus.RunningNamespaces)) {
-			if _, err := fmt.Fprintln(cmd.ErrOrStderr(), warning); err != nil {
+		session := newProgressSession(cmd.ErrOrStderr(), deps.IsStderrTerminal(), deps.ProgressCacheDirectory, "environment start")
+		ctx := session.context(cmd.Context())
+		var status lab.RuntimeStatus
+		operationErr := func() error {
+			cwd, err := environmentWorkingDirectory(deps)
+			if err != nil {
 				return err
 			}
-		}
-		status, err := deps.Environment.Start(cmd.Context(), cwd, deps.Build.Version)
-		if err != nil {
+			labNumber, err := deps.Environment.ConfiguredLab(cwd)
+			if err != nil {
+				return err
+			}
+			progressapi.Report(ctx, progressapi.Stage, "Inspecting cluster capacity")
+			clusterStatus, err := deps.Cluster.Inspect(ctx)
+			if err != nil {
+				return err
+			}
+			for _, warning := range deps.Cluster.EnvironmentResourceWarnings(ctx, labNumber, len(clusterStatus.RunningNamespaces)) {
+				progressapi.Report(ctx, progressapi.Warning, warning)
+			}
+			status, err = deps.Environment.Start(ctx, cwd, deps.Build.Version)
+			return err
+		}()
+		if err := session.finish(operationErr); err != nil {
 			return err
 		}
 		if err := printEnvironmentStatus(cmd, status); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), "\nNext: tripgoctl connect")
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "\nNext: tripgoctl connect")
 		return err
 	}}
 	status := &cobra.Command{Use: "status", Short: "Show the current lab environment status", Args: noArgs, RunE: func(cmd *cobra.Command, _ []string) error {

@@ -66,15 +66,14 @@ conflicts — exit code `4`.
 
 ## Reproducible checks
 
-Destructive smoke gates требуют отсутствующего `tripgo-local` перед запуском:
+Destructive integration gates требуют отсутствующего `tripgo-local` перед запуском:
 
-- `make stage5-smoke` — lab 1 PostgreSQL lifecycle, migrations и SSA conflict;
-- `make stage6-smoke` — lab 2 OTLP HTTP/gRPC, Jaeger, Prometheus и Grafana;
-- `make stage8-smoke` — release-like embedded build/push/pull by digest, Push
-  HTTP/gRPC/reflection/admin/logs, pod restart и lab 3 stop/start/reset;
-- `make stage9-smoke` — host Kafka publish/consume, Console API, exact partitions,
-  labs 4/5 isolation, stop/start persistence and reset;
-- `make stage10-smoke` — bounded simultaneous labs 2/4/5, exact
-  host↔kind↔NodePort↔env mappings, independent PostgreSQL/Push/Redpanda/groups,
+- `make integration-lifecycle` — lab 1 PostgreSQL lifecycle, migrations, user
+  file protection и SSA conflict;
+- `make integration-release-runtime` — release-like embedded build/push/pull by
+  digest, Push HTTP/gRPC/admin/logs, pod restart и lab 3 stop/start/reset;
+- `make integration-isolation` — bounded simultaneous labs 2/4/5, exact
+  host↔kind↔NodePort↔env mappings, broken-pipeline recovery, independent
+  PostgreSQL/Push/Redpanda/groups, exact topic reconciliation and reset,
   positive/negative telemetry markers, stable read-only `connect` and endpoint
   recovery after pod replacement.

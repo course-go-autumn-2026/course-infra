@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,15 +19,17 @@ import (
 // Dependencies are process-level capabilities supplied by cmd/tripgoctl.
 // WorkingDirectory is injected so application packages never rely on a global cwd.
 type Dependencies struct {
-	Stdin            io.Reader
-	Stdout           io.Writer
-	Stderr           io.Writer
-	WorkingDirectory func() (string, error)
-	IsTerminal       func() bool
-	Build            buildinfo.Info
-	Cluster          ClusterLifecycle
-	Environment      EnvironmentLifecycle
-	Doctor           Doctor
+	Stdin                  io.Reader
+	Stdout                 io.Writer
+	Stderr                 io.Writer
+	WorkingDirectory       func() (string, error)
+	IsTerminal             func() bool
+	IsStderrTerminal       func() bool
+	ProgressCacheDirectory func() (string, error)
+	Build                  buildinfo.Info
+	Cluster                ClusterLifecycle
+	Environment            EnvironmentLifecycle
+	Doctor                 Doctor
 }
 
 // Doctor performs read-only local prerequisite diagnostics.
@@ -70,6 +73,12 @@ func NewRootCommand(deps Dependencies) (*cobra.Command, error) {
 	}
 	if deps.IsTerminal == nil {
 		deps.IsTerminal = func() bool { return false }
+	}
+	if deps.IsStderrTerminal == nil {
+		deps.IsStderrTerminal = func() bool { return false }
+	}
+	if deps.ProgressCacheDirectory == nil {
+		deps.ProgressCacheDirectory = os.UserCacheDir
 	}
 	if deps.Cluster == nil {
 		service, err := cluster.NewDefault(deps.Stderr)

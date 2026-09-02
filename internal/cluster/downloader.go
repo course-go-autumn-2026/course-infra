@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 )
 
 // Downloader installs verified helper binaries into the user cache.
@@ -31,6 +33,7 @@ func (d Downloader) EnsureKind(ctx context.Context, cacheDir, goos, goarch strin
 	}
 	path := filepath.Join(cacheDir, "kind", KindVersion, "kind")
 	if validFileSHA256(path, expected) {
+		progress.Report(ctx, progress.Activity, "Using cached kind "+KindVersion)
 		return path, nil
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -53,6 +56,7 @@ func (d Downloader) EnsureKind(ctx context.Context, cacheDir, goos, goarch strin
 	if client == nil {
 		client = http.DefaultClient
 	}
+	progress.Report(ctx, progress.Stage, "Downloading kind "+KindVersion)
 	response, err := client.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("download kind %s: %w", KindVersion, err)
@@ -70,9 +74,12 @@ func (d Downloader) EnsureKind(ctx context.Context, cacheDir, goos, goarch strin
 	defer func() { _ = os.Remove(temporaryPath) }()
 	defer func() { _ = temporary.Close() }()
 	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(temporary, hash), response.Body); err != nil {
+	observed := &downloadProgressWriter{ctx: ctx, total: response.ContentLength}
+	if _, err := io.Copy(io.MultiWriter(temporary, hash, observed), response.Body); err != nil {
 		return "", fmt.Errorf("write kind download: %w", err)
 	}
+	observed.complete()
+	progress.Report(ctx, progress.Stage, "Verifying kind download")
 	actual := fmt.Sprintf("%x", hash.Sum(nil))
 	if actual != expected {
 		return "", fmt.Errorf("verify kind checksum: expected %s, got %s", expected, actual)
@@ -90,6 +97,36 @@ func (d Downloader) EnsureKind(ctx context.Context, cacheDir, goos, goarch strin
 		return "", fmt.Errorf("install kind: %w", err)
 	}
 	return path, nil
+}
+
+type downloadProgressWriter struct {
+	ctx      context.Context
+	total    int64
+	written  int64
+	reported int64
+}
+
+func (w *downloadProgressWriter) Write(value []byte) (int, error) {
+	w.written += int64(len(value))
+	if w.written-w.reported >= 1024*1024 {
+		w.reported = w.written
+		w.report()
+	}
+	return len(value), nil
+}
+
+func (w *downloadProgressWriter) complete() {
+	if w.written != w.reported {
+		w.report()
+	}
+}
+
+func (w *downloadProgressWriter) report() {
+	if w.total > 0 {
+		progress.Report(w.ctx, progress.Activity, fmt.Sprintf("Downloaded %.1f/%.1f MiB", float64(w.written)/(1024*1024), float64(w.total)/(1024*1024)))
+		return
+	}
+	progress.Report(w.ctx, progress.Activity, fmt.Sprintf("Downloaded %.1f MiB", float64(w.written)/(1024*1024)))
 }
 
 func validFileSHA256(path, expected string) bool {

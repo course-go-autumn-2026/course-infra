@@ -6,17 +6,17 @@ tripgoctl=${TRIPGOCTL:-"$root/build/bin/tripgoctl"}
 
 for command in docker psql goose shasum; do
 	if ! command -v "$command" >/dev/null 2>&1; then
-		echo "stage5 smoke requires $command" >&2
+		echo "lifecycle integration requires $command" >&2
 		exit 3
 	fi
 done
 
 if "$tripgoctl" cluster status >/dev/null 2>&1; then
-	echo "stage5 smoke requires no existing tripgo-local cluster" >&2
+	echo "lifecycle integration requires no existing tripgo-local cluster" >&2
 	exit 4
 fi
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-stage5-smoke.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-lifecycle-integration.XXXXXX")
 cleanup() {
 	"$tripgoctl" cluster stop --yes >/dev/null 2>&1 || true
 	rm -rf "$work"
@@ -60,7 +60,7 @@ export KUBECONFIG="$work/spoof-kubeconfig"
 	# A foreign SSA manager that force-owns replicas must cause start to
 	# conflict without changing the foreign value.
 	cat <<'EOF' | docker exec -i tripgo-local-control-plane kubectl --kubeconfig=/etc/kubernetes/admin.conf apply \
-		--server-side --force-conflicts --field-manager=stage5-foreign-manager -f -
+		--server-side --force-conflicts --field-manager=lifecycle-integration-foreign-manager -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -92,19 +92,19 @@ EOF
 	database_url=$(sed -n 's/^DATABASE_URL=//p' .env)
 	migrations="$work/migrations"
 	mkdir "$migrations"
-	cat >"$migrations/000001_smoke.sql" <<'SQL'
+	cat >"$migrations/000001_integration.sql" <<'SQL'
 -- +goose Up
-CREATE TABLE stage5_goose_smoke (id bigint PRIMARY KEY, value text NOT NULL);
-INSERT INTO stage5_goose_smoke VALUES (1, 'persisted');
+CREATE TABLE lifecycle_integration_data (id bigint PRIMARY KEY, value text NOT NULL);
+INSERT INTO lifecycle_integration_data VALUES (1, 'persisted');
 -- +goose Down
-DROP TABLE stage5_goose_smoke;
+DROP TABLE lifecycle_integration_data;
 SQL
 	goose -env=none -dir "$migrations" postgres "$database_url" up
-	test "$(psql "$database_url" -Atc 'SELECT value FROM stage5_goose_smoke WHERE id = 1')" = persisted
+	test "$(psql "$database_url" -Atc 'SELECT value FROM lifecycle_integration_data WHERE id = 1')" = persisted
 	"$tripgoctl" environment stop
 	"$tripgoctl" cluster status | grep -F 'Environments: 1 known, 0 running' >/dev/null
 	"$tripgoctl" environment start
-	test "$(psql "$database_url" -Atc 'SELECT value FROM stage5_goose_smoke WHERE id = 1')" = persisted
+	test "$(psql "$database_url" -Atc 'SELECT value FROM lifecycle_integration_data WHERE id = 1')" = persisted
 	goose -env=none -dir "$migrations" postgres "$database_url" down
 	psql "$database_url" -v ON_ERROR_STOP=1 -c 'DROP TABLE goose_db_version;'
 
@@ -118,8 +118,8 @@ SQL
 	test "$(cat .env)" = USER_OWNED=yes
 	rm .env
 	"$tripgoctl" environment start
-	test "$(psql "$database_url" -Atc "SELECT to_regclass('public.stage5_goose_smoke') IS NULL")" = t
+	test "$(psql "$database_url" -Atc "SELECT to_regclass('public.lifecycle_integration_data') IS NULL")" = t
 	"$tripgoctl" environment reset --yes
 )
 
-echo "stage5 lab 1 smoke passed"
+echo "lifecycle integration passed"

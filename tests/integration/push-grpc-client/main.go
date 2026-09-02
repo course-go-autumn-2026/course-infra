@@ -1,4 +1,4 @@
-// Command push-grpc-smoke exercises the public Push Service gRPC contract.
+// Command push-grpc-client exercises the public Push Service gRPC contract.
 package main
 
 import (
@@ -51,7 +51,7 @@ func run(endpoint, expected string, timeout time.Duration) error {
 		return fmt.Errorf("gRPC reflection response=%v error=%w", response, err)
 	}
 	_, callErr := pushv1.NewPushServiceClient(connection).SendPush(ctx, &pushv1.SendPushRequest{
-		RequestId: "grpc-smoke", RecipientId: "8860b315-ec86-42eb-a17c-7c163d721ff5",
+		RequestId: "grpc-integration", RecipientId: "8860b315-ec86-42eb-a17c-7c163d721ff5",
 		Kind: pushv1.PushKind_PUSH_KIND_REQUEST_POSITION,
 		Data: map[string]string{"trip_id": "1f0a9c62-4a1c-4f2e-9d33-2a4bb0f0b111"},
 	})

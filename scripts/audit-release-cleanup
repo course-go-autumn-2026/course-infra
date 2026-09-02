@@ -62,7 +62,7 @@ def main() -> int:
         ROOT / "build" / "bin",
         ROOT / "build" / "cross",
         ROOT / "build" / "container",
-        ROOT / "build" / ".release-smoke-state",
+        ROOT / "build" / ".release-check-state",
     ):
         if development_output.exists():
             fail(f"development build output remains: {development_output.relative_to(ROOT)}")

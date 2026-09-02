@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	progressapi "github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 )
 
 func TestDownloaderCachesVerifiedKind(t *testing.T) {
@@ -31,12 +33,17 @@ func TestDownloaderCachesVerifiedKind(t *testing.T) {
 
 	cache := t.TempDir()
 	downloader := Downloader{BaseURL: server.URL, Checksums: map[string]string{"linux/amd64": digest}}
-	path, err := downloader.EnsureKind(context.Background(), cache, "linux", "amd64")
+	recorder := &progressRecorder{}
+	ctx := progressapi.WithReporter(context.Background(), recorder)
+	path, err := downloader.EnsureKind(ctx, cache, "linux", "amd64")
 	if err != nil {
 		t.Fatalf("EnsureKind() error = %v", err)
 	}
 	if requests.Load() != 1 || !validFileSHA256(path, digest) {
 		t.Fatalf("download requests = %d, path = %s", requests.Load(), path)
+	}
+	if got := recorder.text(); !strings.Contains(got, "Downloading kind") || !strings.Contains(got, "Verifying kind download") {
+		t.Fatalf("download progress = %q", got)
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o700 {

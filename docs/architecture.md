@@ -140,15 +140,14 @@ release recipes после check staging-ят verified bytes в ignored
 
 `Makefile` является единственной automation boundary текущей итерации:
 
-- `make test`, `make test-race`, `make vet`, `make lint`;
-- `make cross-build`;
-- `make container-build`;
-- `make contract-check`;
-- `make verify`;
-- destructive `make stage5-smoke`, `make stage6-smoke`, `make stage7-smoke`,
-  `make stage8-smoke` и `make stage9-smoke` для завершённых вертикальных срезов.
+- `make source-check` — non-destructive source, race, fixture и contract gate;
+- `make lint`, `make cross-build`, `make container-build`;
+- `make verify` — полный локальный gate с linter и Docker container build;
+- destructive `make integration-lifecycle`, `make integration-release-runtime`
+  и `make integration-isolation` для lifecycle, финального runtime и
+  multi-environment isolation.
 
-Linux/Darwin workflow определён в `.github/workflows/release-smoke-platforms.yml`,
+Linux/Darwin workflow определён в `.github/workflows/release-platform-check.yml`,
 но в текущем непрокоммиченном состоянии он ещё не запускался и не является
 свидетельством прохождения CI. `make verify` остаётся локальным gate; native
 Linux и чистая внешняя машина остаются обязательными внешними release gates.

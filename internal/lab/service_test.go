@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,8 +22,31 @@ import (
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/cluster"
 	configenv "github.com/course-go-autumn-2026/tripgo-infra/internal/environment"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/generator"
+	progressapi "github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 	redpandaconfig "github.com/course-go-autumn-2026/tripgo-infra/internal/redpanda"
 )
+
+type testProgressRecorder struct {
+	mu     sync.Mutex
+	events []progressapi.Event
+}
+
+func (r *testProgressRecorder) Report(event progressapi.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *testProgressRecorder) contains(kind progressapi.Kind, text string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, event := range r.events {
+		if event.Kind == kind && strings.Contains(event.Message, text) {
+			return true
+		}
+	}
+	return false
+}
 
 func TestWriteEnvIncludesStableLiteralCustomVariables(t *testing.T) {
 	t.Parallel()
@@ -302,9 +326,14 @@ func TestWaitForWorkloadsReportsComponentSpecificReadinessOnCancellation(t *test
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), deployment)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
+	recorder := &testProgressRecorder{}
+	ctx = progressapi.WithReporter(ctx, recorder)
 	err := waitForWorkloads(ctx, client, "tripgo-lab-01", []workload{{name: "postgres", resource: deploymentResource}}, 1)
 	if err == nil || !strings.Contains(err.Error(), "postgres (desired=1 ready=0 generation=3 observed=2)") {
 		t.Fatalf("readiness error = %v", err)
+	}
+	if !recorder.contains(progressapi.Readiness, "postgres 0/1") {
+		t.Fatalf("readiness progress was not reported: %+v", recorder.events)
 	}
 }
 

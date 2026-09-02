@@ -1,4 +1,4 @@
-// Command kafka-smoke verifies host-side Kafka publish and consume behavior.
+// Command kafka-client verifies host-side Kafka publish and consume behavior.
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 func main() {
 	endpoint := flag.String("endpoint", "localhost:24092", "Kafka bootstrap endpoint")
 	topic := flag.String("topic", "trip.events.v1", "topic to test")
-	message := flag.String("message", "tripgo-stage9", "message payload")
+	message := flag.String("message", "tripgo-integration", "message payload")
 	groupFlag := flag.String("group", "", "consumer group (default: unique)")
 	expectedKey := flag.String("expected-key", "", "require this record key (default: producer group when publishing; any key otherwise)")
 	publish := flag.Bool("publish", true, "publish the message before consuming")
@@ -25,7 +25,7 @@ func main() {
 	defer cancel()
 	group := *groupFlag
 	if group == "" {
-		group = fmt.Sprintf("tripgo-smoke-%d", time.Now().UnixNano())
+		group = fmt.Sprintf("tripgo-integration-%d", time.Now().UnixNano())
 	}
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(*endpoint),

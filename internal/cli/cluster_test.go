@@ -13,6 +13,7 @@ import (
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/buildinfo"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/cli"
 	"github.com/course-go-autumn-2026/tripgo-infra/internal/cluster"
+	progressapi "github.com/course-go-autumn-2026/tripgo-infra/internal/progress"
 )
 
 type fakeCluster struct {
@@ -22,10 +23,14 @@ type fakeCluster struct {
 	startErr         error
 	starts           int
 	stops            int
+	startProgress    []progressapi.Event
 }
 
-func (f *fakeCluster) Start(context.Context) (cluster.Status, error) {
+func (f *fakeCluster) Start(ctx context.Context) (cluster.Status, error) {
 	f.starts++
+	for _, event := range f.startProgress {
+		progressapi.Report(ctx, event.Kind, event.Message)
+	}
 	return f.status, f.startErr
 }
 
@@ -72,6 +77,27 @@ func TestClusterStartOutput(t *testing.T) {
 	}
 	if application.starts != 1 {
 		t.Fatalf("Start calls = %d", application.starts)
+	}
+}
+
+func TestClusterStartKeepsProgressOnStderrAndFinalStatusOnStdout(t *testing.T) {
+	t.Parallel()
+	application := &fakeCluster{
+		status:        cluster.Status{Ready: true, RegistryReady: true},
+		startProgress: []progressapi.Event{{Kind: progressapi.Stage, Message: "Creating Kubernetes cluster"}},
+	}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	root := testRoot(t, cli.Dependencies{Stdout: stdout, Stderr: stderr, Cluster: application})
+	root.SetArgs([]string{"cluster", "start"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout.String(), "Creating Kubernetes") || !strings.Contains(stdout.String(), "Cluster: tripgo-local") {
+		t.Fatalf("stdout contract changed: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Creating Kubernetes cluster") {
+		t.Fatalf("progress did not reach stderr: %q", stderr.String())
 	}
 }
 
@@ -155,6 +181,10 @@ func testRoot(t *testing.T, deps cli.Dependencies) *cobra.Command {
 	}
 	if deps.WorkingDirectory == nil {
 		deps.WorkingDirectory = func() (string, error) { return "/lab", nil }
+	}
+	if deps.ProgressCacheDirectory == nil {
+		cache := t.TempDir()
+		deps.ProgressCacheDirectory = func() (string, error) { return cache, nil }
 	}
 	deps.Build = buildinfo.Current("tripgoctl")
 	root, err := cli.NewRootCommand(deps)
