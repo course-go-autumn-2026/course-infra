@@ -1,6 +1,6 @@
 {
   "source_repository": "git@github.com:course-go-autumn-2026/homework.git",
-  "source_commit": "c41c5378b8fd76211e197f76ac6ee6bfb0eeec26",
+  "source_commit": "7d513c5d72998a16e2a5a6b230b683fb8e257549",
   "files": [
     {
       "source": "contracts/openapi/push-service.openapi.yaml",
