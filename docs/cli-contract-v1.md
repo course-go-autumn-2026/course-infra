@@ -106,7 +106,8 @@ Namespace имеет вид `tripgo-lab-01` … `tripgo-lab-05`.
 
 Валидирует TOML до мутаций, проверяет cluster identity, применяет требуемое
 состояние через Kubernetes server-side apply, создаёт топики, ждёт readiness,
-атомарно пишет `.tripgo/` и `.env`.
+атомарно обновляет `.tripgo/rendered` и `.env`. Локальный lock не сохраняется;
+повторный start всегда перегенерирует manifests.
 
 Итог содержит lab, namespace, состояния компонентов и команду `tripgoctl
 connect`. Повторный start reconciles окружение и возвращает `0`.
@@ -118,15 +119,15 @@ readiness и сохранённый digest образа. Команда ниче
 
 ### `environment stop`
 
-Масштабирует управляемые workloads до нуля. Namespace, PVC, lock и данные
+Масштабирует управляемые workloads до нуля. Namespace, PVC и данные
 сохраняются. Повторный stop возвращает `0`.
 
 ### `environment reset [--yes]`
 
 Показывает namespace и предупреждает об удалении данных. Требует `yes` или
-`--yes`. Удаляет только namespace с полным набором ownership labels. Локальные
-`.env` и `.tripgo/` удаляются только если распознаны как файлы tripgoctl;
-пользовательские файлы не удаляются. Отсутствующий namespace — идемпотентный
+`--yes`. Удаляет только namespace с полным набором ownership labels. Локальный
+`.env` удаляется только по marker; из `.tripgo` удаляется только `rendered`, а
+неизвестные соседние файлы сохраняются. Отсутствующий namespace — идемпотентный
 успех.
 
 ### `environment list`
@@ -149,8 +150,10 @@ LAB  NAMESPACE       STATE    COMPONENTS
 ## `connect`
 
 Только читает состояние, проверяет existence/readiness, печатает фиксированные
-host endpoints и завершается. Не запускает port-forward, не меняет `.env` и
-lock. Повторный вызов детерминирован при неизменном состоянии.
+host endpoints и необходимые credentials и завершается. Для Grafana в labs 2–5
+печатаются `admin` / `admin`; anonymous Admin-доступ также включён. Команда не
+запускает port-forward, не меняет `.env` и lock. Повторный вызов детерминирован
+при неизменном состоянии.
 
 Пример для работы 1:
 

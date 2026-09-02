@@ -71,10 +71,17 @@ data:
     apiVersion: 1
     datasources:
       - name: Prometheus
+        uid: prometheus
         type: prometheus
         access: proxy
         url: http://prometheus:9090
         isDefault: true
+        editable: false
+      - name: Jaeger
+        uid: jaeger
+        type: jaeger
+        access: proxy
+        url: http://jaeger:16686
         editable: false
 ---
 apiVersion: apps/v1
@@ -414,7 +421,10 @@ spec:
           env:
             - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
             - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Admin}
-            - {name: GF_AUTH_DISABLE_LOGIN_FORM, value: "true"}
+            - {name: GF_AUTH_DISABLE_LOGIN_FORM, value: "false"}
+            - {name: GF_SECURITY_ADMIN_USER, value: admin}
+            - {name: GF_SECURITY_ADMIN_PASSWORD, value: admin}
+            - {name: GF_USERS_ALLOW_SIGN_UP, value: "false"}
           ports:
             - {name: http, containerPort: 3000}
           readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 3}

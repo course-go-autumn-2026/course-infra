@@ -115,6 +115,8 @@ func TestConnectPrintsLab2ObservabilityEndpoints(t *testing.T) {
 	for _, expected := range []string{
 		"PostgreSQL  localhost:22032",
 		"Grafana     http://localhost:22300",
+		"CREDENTIALS  USER   PASSWORD",
+		"Grafana      admin  admin",
 		"OTel gRPC   localhost:22317",
 		"OTel HTTP   http://localhost:22318",
 		"Jaeger      http://localhost:22686",
