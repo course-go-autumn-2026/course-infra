@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redpanda-topics
+  namespace: tripgo-lab-04
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "04"
+    tripgo.course/environment: tripgo-lab-04
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+data:
+  topics: |
+    trip.events.v1=3
+    trip.commands.v1=3
+    trip.commands.v1.dlq=1
+  reconcile.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    broker=redpanda:9092
+    reconcile() {
+      rm -f /tmp/topics-ready
+      while IFS== read -r topic desired; do
+        [ -n "$topic" ] || continue
+        if ! rpk topic list --brokers "$broker" | awk -v wanted="$topic" '$1 == wanted {found=1} END {exit !found}'; then
+          rpk topic create "$topic" --partitions "$desired" --replicas 1 --brokers "$broker"
+          current=$desired
+        else
+          rpk topic describe "$topic" -p --brokers "$broker" >/tmp/partitions
+          # The partition table has one numeric data row per partition.
+          current=$(awk '$1 ~ /^[0-9]+$/ {count++} END {print count+0}' /tmp/partitions)
+        fi
+        if [ "$current" -lt "$desired" ]; then
+          rpk topic add-partitions "$topic" --num "$((desired-current))" --brokers "$broker"
+        elif [ "$current" -gt "$desired" ]; then
+          echo "topic $topic has $current partitions; refusing destructive reduction to $desired" >&2
+          return 1
+        fi
+      done </config/topics
+      touch /tmp/topics-ready
+    }
+    while true; do
+      reconcile
+      sleep 15
+    done

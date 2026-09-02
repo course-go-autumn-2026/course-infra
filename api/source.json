@@ -1,0 +1,18 @@
+{
+  "source_repository": "git@github.com:course-go-autumn-2026/homework.git",
+  "source_commit": "c41c5378b8fd76211e197f76ac6ee6bfb0eeec26",
+  "files": [
+    {
+      "source": "contracts/openapi/push-service.openapi.yaml",
+      "destination": "api/openapi/push-service.openapi.yaml",
+      "link_target": "../../third_party/homework/contracts/openapi/push-service.openapi.yaml",
+      "sha256": "52147de015244282125c2453ea92cfb75d3f8319a3ebbbc5c15bf1e62897b1cf"
+    },
+    {
+      "source": "contracts/proto/push/v1/push.proto",
+      "destination": "api/proto/push/v1/push.proto",
+      "link_target": "../../../../third_party/homework/contracts/proto/push/v1/push.proto",
+      "sha256": "78753dcef310c9fc8e190c8632bde1f3c1fd8324fe9632dee34ee3be14e9b59d"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "{{ .LabLabel }}"
+    tripgo.course/environment: {{ .Namespace }}
+  annotations:
+    tripgo.course/generator-version: {{ printf "%q" .Version }}
+    tripgo.course/cluster-id: {{ printf "%q" .ClusterID }}

@@ -1,0 +1,99 @@
+#!/bin/sh
+# Fixture regression for committed, staged-only, and unborn gitlink provenance.
+set -eu
+
+source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-provenance-test.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+
+init_homework() {
+	repo=$1
+	git init -q "$repo"
+	git -C "$repo" config user.name test
+	git -C "$repo" config user.email test@example.invalid
+	mkdir -p "$repo/contracts/openapi" "$repo/contracts/proto/push/v1"
+	printf 'openapi-v1\n' >"$repo/contracts/openapi/push-service.openapi.yaml"
+	printf 'proto-v1\n' >"$repo/contracts/proto/push/v1/push.proto"
+	git -C "$repo" add .
+	git -C "$repo" commit -qm homework-v1
+}
+
+init_superproject() {
+	root=$1
+	homework=$2
+	git init -q "$root"
+	git -C "$root" config user.name test
+	git -C "$root" config user.email test@example.invalid
+	git -C "$root" config advice.addEmbeddedRepo false
+	mkdir -p "$root/scripts" "$root/api/openapi" "$root/api/proto/push/v1" "$root/third_party"
+	cp "$source_root/scripts/sync-contracts" "$root/scripts/sync-contracts"
+	cp "$source_root/scripts/build-release" "$root/scripts/build-release"
+	chmod +x "$root/scripts/sync-contracts" "$root/scripts/build-release"
+	cp -R "$homework" "$root/third_party/homework"
+	ln -s ../../third_party/homework/contracts/openapi/push-service.openapi.yaml "$root/api/openapi/push-service.openapi.yaml"
+	ln -s ../../../../third_party/homework/contracts/proto/push/v1/push.proto "$root/api/proto/push/v1/push.proto"
+	git -c advice.addEmbeddedRepo=false -C "$root" add .
+}
+
+homework=$tmp/homework
+root=$tmp/super
+init_homework "$homework"
+init_superproject "$root" "$homework"
+git -C "$root" commit -qm super-v1
+"$root/scripts/sync-contracts" sync >/dev/null
+git -C "$root" add api/source.json
+git -C "$root" commit -qm metadata
+printf 'package fixture\n' >"$root/tracked.go"
+git -C "$root" add tracked.go
+git -C "$root" commit -qm source
+"$root/scripts/sync-contracts" release-check >/dev/null
+if "$root/scripts/build-release" --commit unknown >"$tmp/commit.out" 2>&1; then
+	echo 'release build accepted an arbitrary COMMIT' >&2
+	exit 1
+fi
+grep 'COMMIT must equal full superproject HEAD' "$tmp/commit.out" >/dev/null
+
+printf '// dirty source\n' >>"$root/tracked.go"
+head=$(git -C "$root" rev-parse HEAD)
+if "$root/scripts/build-release" --commit "$head" >"$tmp/source-dirty.out" 2>&1; then
+	echo 'release build accepted dirty non-contract source' >&2
+	exit 1
+fi
+grep 'release requires a clean superproject index and worktree' "$tmp/source-dirty.out" >/dev/null
+git -C "$root" checkout -q -- tracked.go
+
+printf 'proto-v2\n' >"$root/third_party/homework/contracts/proto/push/v1/push.proto"
+git -C "$root/third_party/homework" add .
+git -C "$root/third_party/homework" commit -qm homework-v2
+git -C "$root" add third_party/homework
+if "$root/scripts/sync-contracts" release-check >"$tmp/staged.out" 2>&1; then
+	echo 'release-check accepted a staged-only gitlink advance' >&2
+	exit 1
+fi
+grep 'differs from superproject HEAD gitlink' "$tmp/staged.out" >/dev/null
+
+git -C "$root" reset -q HEAD -- third_party/homework
+if "$root/scripts/sync-contracts" release-check >"$tmp/checkout.out" 2>&1; then
+	echo 'release-check accepted a checkout/index gitlink mismatch' >&2
+	exit 1
+fi
+grep 'homework checkout HEAD.*differs from pinned gitlink' "$tmp/checkout.out" >/dev/null
+
+pinned=$(git -C "$root" ls-tree HEAD -- third_party/homework | awk '{print $3}')
+git -C "$root/third_party/homework" checkout -q "$pinned"
+printf 'dirty\n' >>"$root/third_party/homework/contracts/openapi/push-service.openapi.yaml"
+if "$root/scripts/sync-contracts" release-check >"$tmp/dirty.out" 2>&1; then
+	echo 'release-check accepted dirty canonical contract bytes' >&2
+	exit 1
+fi
+grep 'differs from pinned commit' "$tmp/dirty.out" >/dev/null
+
+unborn=$tmp/unborn
+init_superproject "$unborn" "$homework"
+if "$unborn/scripts/sync-contracts" release-check >"$tmp/unborn.out" 2>&1; then
+	echo 'release-check accepted an unborn superproject' >&2
+	exit 1
+fi
+grep -E 'HEAD|rev-parse' "$tmp/unborn.out" >/dev/null
+
+echo 'Release provenance fixtures passed (committed positive; arbitrary COMMIT, dirty source, staged-only gitlink, checkout mismatch, dirty contract, and unborn negative)'

@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Verify symlinks to canonical Push Service contracts in the homework submodule."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SUBMODULE = ROOT / "third_party" / "homework"
+SOURCE_REPOSITORY = "git@github.com:course-go-autumn-2026/homework.git"
+CONTRACTS = {
+    "contracts/openapi/push-service.openapi.yaml": "api/openapi/push-service.openapi.yaml",
+    "contracts/proto/push/v1/push.proto": "api/proto/push/v1/push.proto",
+}
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(128 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_commit() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(SUBMODULE), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def index_source_commit() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "--stage", "--", "third_party/homework"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    fields = result.stdout.strip().split()
+    if len(fields) != 4 or fields[0] != "160000" or fields[2] != "0" or fields[3] != "third_party/homework":
+        raise ValueError("third_party/homework is not a pinned stage-0 gitlink in the superproject index")
+    return fields[1]
+
+
+def superproject_head() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def head_source_commit() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-tree", "HEAD", "--", "third_party/homework"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    fields = result.stdout.strip().split()
+    if len(fields) != 4 or fields[0] != "160000" or fields[1] != "commit" or fields[3] != "third_party/homework":
+        raise ValueError("superproject HEAD does not contain third_party/homework as a gitlink")
+    return fields[2]
+
+
+def committed_source(source_name: str, commit: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(SUBMODULE), "show", f"{commit}:{source_name}"],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def link_target(source_name: str, destination_name: str) -> str:
+    destination_parent = (ROOT / destination_name).parent
+    return os.path.relpath(SUBMODULE / source_name, destination_parent)
+
+
+def expected_manifest(strict_release: bool = False) -> dict[str, object]:
+    commit = source_commit()
+    if strict_release:
+        # A release is anchored only in the committed superproject tree. An unborn
+        # HEAD or a merely staged gitlink must never establish provenance.
+        superproject_head()
+        pinned_commit = head_source_commit()
+        index_commit = index_source_commit()
+        if index_commit != pinned_commit:
+            raise ValueError(
+                f"index gitlink {index_commit} differs from superproject HEAD gitlink {pinned_commit}"
+            )
+    else:
+        try:
+            pinned_commit = index_source_commit()
+        except ValueError:
+            # Development bootstrap remains usable before the first superproject
+            # commit. This path is intentionally unavailable to release-check.
+            try:
+                superproject_head()
+            except subprocess.CalledProcessError:
+                pinned_commit = commit
+            else:
+                raise ValueError(
+                    "third_party/homework is not a pinned stage-0 gitlink in the superproject index"
+                )
+    if commit != pinned_commit:
+        raise ValueError(
+            f"homework checkout HEAD {commit} differs from pinned gitlink {pinned_commit}"
+        )
+
+    files = []
+    for source_name, destination_name in CONTRACTS.items():
+        source = SUBMODULE / source_name
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"missing {source_name}; initialize submodules with "
+                "git submodule update --init --recursive"
+            )
+        working_bytes = source.read_bytes()
+        if working_bytes != committed_source(source_name, commit):
+            raise ValueError(
+                f"{source_name} differs from pinned commit {commit}; commit the canonical change "
+                "and advance the superproject gitlink before syncing or releasing"
+            )
+        files.append(
+            {
+                "source": source_name,
+                "destination": destination_name,
+                "link_target": link_target(source_name, destination_name),
+                "sha256": sha256(source),
+            }
+        )
+    return {
+        "source_repository": SOURCE_REPOSITORY,
+        "source_commit": commit,
+        "files": files,
+    }
+
+
+def manifest_bytes(manifest: dict[str, object]) -> bytes:
+    return (json.dumps(manifest, indent=2) + "\n").encode()
+
+
+def atomic_symlink(destination: Path, target: str) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.parent / f".{destination.name}.tripgo-{os.getpid()}"
+    try:
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(target)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_write(destination: Path, content: bytes) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, destination)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def sync() -> int:
+    manifest = expected_manifest()
+    for item in manifest["files"]:
+        atomic_symlink(ROOT / item["destination"], item["link_target"])
+    atomic_write(ROOT / "api" / "source.json", manifest_bytes(manifest))
+    print("Push Service contract symlinks synchronized")
+    return 0
+
+
+def check(strict_release: bool = False) -> int:
+    manifest = expected_manifest(strict_release=strict_release)
+    mismatches = []
+    for item in manifest["files"]:
+        destination = ROOT / item["destination"]
+        if not destination.is_symlink():
+            mismatches.append(f"{item['destination']}: expected symlink")
+            continue
+        actual_target = os.readlink(destination)
+        if actual_target != item["link_target"]:
+            mismatches.append(
+                f"{item['destination']}: target {actual_target!r}, expected {item['link_target']!r}"
+            )
+            continue
+        if not destination.is_file():
+            mismatches.append(f"{item['destination']}: canonical target is missing")
+
+    manifest_path = ROOT / "api" / "source.json"
+    expected_metadata = manifest_bytes(manifest)
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        mismatches.append("api/source.json: expected regular metadata file")
+    elif manifest_path.read_bytes() != expected_metadata:
+        mismatches.append("api/source.json: source commit or SHA metadata is stale")
+
+    if mismatches:
+        print("Push Service contract links are out of sync:", file=sys.stderr)
+        for mismatch in mismatches:
+            print(f"  - {mismatch}", file=sys.stderr)
+        print("Run: ./scripts/sync-contracts sync", file=sys.stderr)
+        return 1
+
+    print("Push Service contract symlinks and metadata are in sync")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("sync", "check", "release-check"))
+    args = parser.parse_args()
+    try:
+        if args.mode == "sync":
+            return sync()
+        return check(strict_release=args.mode == "release-check")
+    except (FileNotFoundError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"contract sync failed: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

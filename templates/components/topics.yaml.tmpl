@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redpanda-topics
+  namespace: {{ .Namespace }}
+  labels:
+{{ template "labels4" . }}  annotations:
+{{ template "annotations4" . }}data:
+  topics: |
+{{ indent 4 .RedpandaTopics }}  reconcile.sh: |
+{{ indent 4 .ReconcileScript }}

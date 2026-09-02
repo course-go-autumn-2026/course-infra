@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Generate protobuf bindings in a clean tree, then replace the generated tree."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+GENERATED = ROOT / "internal" / "gen"
+BUF = ROOT / "build" / "tools" / "buf"
+PLUGINS = (ROOT / "build" / "tools" / "protoc-gen-go", ROOT / "build" / "tools" / "protoc-gen-go-grpc")
+CONFIG = ROOT / "buf.gen.yaml"
+CONTRACT_CHECK = ROOT / "scripts" / "sync-contracts"
+
+
+def main() -> int:
+    # Contract provenance must be established before tools run or output changes.
+    subprocess.run([str(CONTRACT_CHECK), "check"], cwd=ROOT, check=True)
+    missing = [path for path in (BUF, *PLUGINS) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("protobuf tools are missing; run: make proto-tools-install")
+
+    GENERATED.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".gen-new-", dir=GENERATED.parent) as temporary:
+        clean_output = Path(temporary) / "output"
+        redirected = CONFIG.read_text().replace("out: internal/gen", f"out: {clean_output}")
+        config = Path(temporary) / "buf.gen.yaml"
+        config.write_text(redirected)
+        subprocess.run(
+            [str(BUF), "generate", "api/proto", "--template", str(config)],
+            cwd=ROOT,
+            check=True,
+        )
+        if not clean_output.is_dir():
+            raise ValueError("protobuf generation did not create its configured output tree")
+
+        backup = GENERATED.parent / f".gen-old-{os.getpid()}"
+        shutil.rmtree(backup, ignore_errors=True)
+        had_generated = GENERATED.exists()
+        try:
+            if had_generated:
+                os.replace(GENERATED, backup)
+            os.replace(clean_output, GENERATED)
+        except BaseException:
+            if had_generated and backup.exists() and not GENERATED.exists():
+                os.replace(backup, GENERATED)
+            raise
+        finally:
+            shutil.rmtree(backup, ignore_errors=True)
+
+    print("Generated protobuf tree replaced from clean generation")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (FileNotFoundError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"protobuf generation failed: {error}", file=sys.stderr)
+        raise SystemExit(1)

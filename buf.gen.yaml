@@ -1,0 +1,12 @@
+version: v2
+plugins:
+  - local: build/tools/protoc-gen-go
+    out: internal/gen
+    opt:
+      - paths=source_relative
+      - Mpush/v1/push.proto=github.com/course-go-autumn-2026/tripgo-infra/internal/gen/push/v1
+  - local: build/tools/protoc-gen-go-grpc
+    out: internal/gen
+    opt:
+      - paths=source_relative
+      - Mpush/v1/push.proto=github.com/course-go-autumn-2026/tripgo-infra/internal/gen/push/v1

@@ -1,0 +1,200 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tripgoctl=${TRIPGOCTL:-"$root/build/bin/tripgoctl-stage10"}
+for command in curl docker go grep jq psql shasum; do
+	command -v "$command" >/dev/null 2>&1 || { echo "stage10 smoke requires $command" >&2; exit 3; }
+done
+if "$tripgoctl" cluster status >/dev/null 2>&1; then
+	echo "stage10 smoke requires no existing tripgo-local cluster" >&2; exit 4
+fi
+memory=$(docker info --format '{{.MemTotal}}')
+free_kb=$(df -k "$root" | awk 'NR==2 {print $4}')
+if [ "$memory" -lt 10737418240 ] || [ "$free_kb" -lt 15728640 ]; then
+	echo "stage10 bounded capacity preflight: need >=10 GiB Docker memory and >=15 GiB disk; measured memory=$memory bytes disk=$free_kb KiB" >&2
+	exit 3
+fi
+work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-stage10-smoke.XXXXXX")
+cleanup_done=0
+cleanup() {
+	if [ "$cleanup_done" -eq 0 ]; then "$tripgoctl" cluster stop --yes >/dev/null 2>&1 || true; fi
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+for lab in 2 4 5; do
+	mkdir -p "$work/lab$lab"
+	components='["postgres", "observability"]'
+	[ "$lab" -lt 4 ] || components='["postgres", "observability", "push", "redpanda"]'
+	cat >"$work/lab$lab/environment.toml" <<EOF
+schema_version = 1
+lab = $lab
+components = $components
+EOF
+done
+kubectl_in_node() { docker exec tripgo-local-control-plane kubectl --kubeconfig=/etc/kubernetes/admin.conf "$@"; }
+retry_ready() {
+	lab=$1 attempt=0
+	until (cd "$work/lab$lab" && "$tripgoctl" environment status 2>/dev/null | grep -F 'Status:      ready' >/dev/null); do
+		attempt=$((attempt+1)); [ "$attempt" -lt 90 ] || { echo "lab $lab did not recover" >&2; return 1; }; sleep 2
+	done
+}
+capture_owned_pod_uids() {
+	namespace=$1 output=$2 expected=$3
+	kubectl_in_node -n "$namespace" get pods -l "app.kubernetes.io/managed-by=tripgoctl,tripgo.course/environment=$namespace" -o json |
+		jq -er --argjson expected "$expected" '
+			[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+			if ($pods | length) == $expected and all($pods[]; any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+			then $pods | sort_by(.metadata.uid) | .[].metadata.uid
+			else error("owned pod set is not complete and ready") end' >"$output"
+	test "$(wc -l <"$output" | tr -d ' ')" = "$expected"
+}
+wait_for_replacement_pods() {
+	namespace=$1 old_uids=$2 expected=$3
+	attempt=0
+	while [ "$attempt" -lt 90 ]; do
+		current=$work/current-pods-${namespace}.json
+		kubectl_in_node -n "$namespace" get pods -l "app.kubernetes.io/managed-by=tripgoctl,tripgo.course/environment=$namespace" -o json >"$current"
+		if ! jq -r '.items[].metadata.uid' "$current" | grep -Fxf "$old_uids" >/dev/null &&
+			jq -e --argjson expected "$expected" '
+				[.items[] | select(.metadata.deletionTimestamp == null)] as $pods |
+				($pods | length) == $expected and
+				all($pods[]; any(.status.conditions[]?; .type == "Ready" and .status == "True"))' "$current" >/dev/null; then
+			return 0
+		fi
+		attempt=$((attempt+1)); sleep 2
+	done
+	echo "$namespace did not replace its complete owned pod UID set" >&2
+	return 1
+}
+retry_query_count() {
+	url=$1 expected=$2 attempt=0
+	until [ "$(curl -fsS "$url" | jq '.data.result | length')" = "$expected" ]; do
+		attempt=$((attempt+1)); [ "$attempt" -lt 45 ] || { echo "query did not reach count $expected: $url" >&2; return 1; }; sleep 2
+	done
+}
+retry_trace_count() {
+	url=$1 expected=$2 attempt=0
+	until [ "$(curl -fsS "$url" | jq '.data | length')" = "$expected" ]; do
+		attempt=$((attempt+1)); [ "$attempt" -lt 45 ] || { echo "trace query did not reach count $expected: $url" >&2; return 1; }; sleep 2
+	done
+}
+post_status() { curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data-binary "$2" "$1"; }
+
+"$tripgoctl" cluster start
+for lab in 2 4 5; do
+	(cd "$work/lab$lab" && "$tripgoctl" environment start)
+done
+
+# Exact host -> kind -> NodePort -> Service -> generated env mappings.
+for lab in 2 4 5; do
+	base=$((20000+lab*1000)); node=$((30000+lab*100))
+	case $lab in 2) names='postgres:32:3 grafana:300:4 otel-grpc:317:5 otel-http:318:6 jaeger:686:7 prometheus:909:10';;
+	*) names='redpanda-console:81:1 redpanda-kafka:92:2 postgres:32:3 grafana:300:4 otel-grpc:317:5 otel-http:318:6 jaeger:686:7 push-http:809:8 push-grpc:905:9 prometheus:909:10';;
+	esac
+	for mapping in $names; do
+		name=${mapping%%:*}; rest=${mapping#*:}; offset=${rest%%:*}; node_offset=${rest#*:}
+		host=$((base+offset)); nodeport=$((node+node_offset))
+		docker port tripgo-local-control-plane "$nodeport/tcp" | grep -F "127.0.0.1:$host" >/dev/null
+	done
+	grep -F "DATABASE_URL=postgres://tripgo:tripgo@localhost:$((base+32))/tripgo?sslmode=disable" "$work/lab$lab/.env" >/dev/null
+	grep -F "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:$((base+318))" "$work/lab$lab/.env" >/dev/null
+	[ "$lab" -lt 4 ] || { grep -F "PUSH_HTTP_URL=http://localhost:$((base+809))" "$work/lab$lab/.env" >/dev/null; grep -F "PUSH_GRPC_ADDR=localhost:$((base+905))" "$work/lab$lab/.env" >/dev/null; grep -F "BROKER_BROKERS=localhost:$((base+92))" "$work/lab$lab/.env" >/dev/null; }
+done
+
+list=$($tripgoctl environment list)
+for expected in \
+	'02   tripgo-lab-02   ready    postgres,otel-collector,jaeger,prometheus,grafana' \
+	'04   tripgo-lab-04   ready    postgres,otel-collector,jaeger,prometheus,grafana,push-service,redpanda,redpanda-console,redpanda-topic-reconciler' \
+	'05   tripgo-lab-05   ready    postgres,otel-collector,jaeger,prometheus,grafana,push-service,redpanda,redpanda-console,redpanda-topic-reconciler'; do
+	printf '%s\n' "$list" | grep -F "$expected" >/dev/null
+done
+
+# connect is a stable one-shot read: local generated bytes and output are unchanged.
+for lab in 2 4 5; do
+	before=$(find "$work/lab$lab" -type f -exec shasum -a 256 {} + | sort | shasum -a 256)
+	(cd "$work/lab$lab" && "$tripgoctl" connect >connect.1)
+	after_first=$(find "$work/lab$lab" -type f ! -name 'connect.*' -exec shasum -a 256 {} + | sort | shasum -a 256)
+	(cd "$work/lab$lab" && "$tripgoctl" connect >connect.2)
+	cmp "$work/lab$lab/connect.1" "$work/lab$lab/connect.2"
+	# Recompute the original set, excluding proof output.
+	test "$before" = "$after_first"
+done
+
+# Independent PostgreSQL state with explicit negative cross-lab checks.
+for lab in 2 4 5; do
+	url=$(sed -n 's/^DATABASE_URL=//p' "$work/lab$lab/.env")
+	psql "$url" -v ON_ERROR_STOP=1 -c "CREATE TABLE stage10_lab${lab}_only(value text); INSERT INTO stage10_lab${lab}_only VALUES ('pg-lab-$lab');" >/dev/null
+	for other in 2 4 5; do
+		[ "$lab" = "$other" ] || test "$(psql "$url" -Atc "SELECT to_regclass('stage10_lab${other}_only') IS NULL")" = t
+	done
+done
+
+# Push behaviour is namespace-local: each fault marker is positive only in its lab.
+request='{"request_id":"stage10","recipient_id":"8860b315-ec86-42eb-a17c-7c163d721ff5","kind":"TRIP_CREATED"}'
+test "$(post_status http://localhost:24809/admin/behaviour '{"fail_rate":1}')" = 200
+test "$(post_status http://localhost:24809/api/v1/push "$request")" = 503
+test "$(post_status http://localhost:25809/api/v1/push "$request")" = 202
+test "$(post_status http://localhost:24809/admin/behaviour '{"fail_rate":0}')" = 200
+test "$(post_status http://localhost:25809/admin/behaviour '{"fail_rate":1}')" = 200
+test "$(post_status http://localhost:25809/api/v1/push "$request")" = 503
+test "$(post_status http://localhost:24809/api/v1/push "$request")" = 202
+test "$(post_status http://localhost:25809/admin/behaviour '{"fail_rate":0}')" = 200
+
+# Independent Kafka records and consumer groups, including negative namespace proof.
+(cd "$root" && go run ./tests/kafka-smoke -endpoint localhost:24092 -group stage10-group-lab4 -message kafka-lab4)
+(cd "$root" && go run ./tests/kafka-smoke -endpoint localhost:25092 -group stage10-group-lab5 -message kafka-lab5)
+kubectl_in_node -n tripgo-lab-04 exec redpanda-0 -c redpanda -- rpk group list --brokers redpanda:9092 | grep -F stage10-group-lab4 >/dev/null
+! kubectl_in_node -n tripgo-lab-05 exec redpanda-0 -c redpanda -- rpk group list --brokers redpanda:9092 | grep -F stage10-group-lab4 >/dev/null
+kubectl_in_node -n tripgo-lab-05 exec redpanda-0 -c redpanda -- rpk group list --brokers redpanda:9092 | grep -F stage10-group-lab5 >/dev/null
+! kubectl_in_node -n tripgo-lab-04 exec redpanda-0 -c redpanda -- rpk group list --brokers redpanda:9092 | grep -F stage10-group-lab5 >/dev/null
+
+# Unique positive and negative telemetry markers for all three namespaces.
+now=$(($(date +%s)*1000000000))
+for lab in 2 4 5; do
+	base=$((20000+lab*1000)); service=stage10-lab${lab}-only; metric=stage10_lab${lab}_only_metric
+	cat >"$work/trace-$lab.json" <<EOF
+{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"$service"}}]},"scopeSpans":[{"scope":{"name":"stage10"},"spans":[{"traceId":"0000000000000000000000000000000$lab","spanId":"000000000000000$lab","name":"trace-lab-$lab-only","kind":1,"startTimeUnixNano":"$now","endTimeUnixNano":"$((now+1000000))"}]}]}]}
+EOF
+	cat >"$work/metric-$lab.json" <<EOF
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"$service"}}]},"scopeMetrics":[{"scope":{"name":"stage10"},"metrics":[{"name":"$metric","gauge":{"dataPoints":[{"timeUnixNano":"$now","asDouble":$lab}]}}]}]}]}
+EOF
+	curl -fsS -H 'Content-Type: application/json' --data-binary @"$work/trace-$lab.json" "http://localhost:$((base+318))/v1/traces" >/dev/null
+	curl -fsS -H 'Content-Type: application/json' --data-binary @"$work/metric-$lab.json" "http://localhost:$((base+318))/v1/metrics" >/dev/null
+done
+for lab in 2 4 5; do
+	base=$((20000+lab*1000))
+	for marker in 2 4 5; do
+		expected=0; [ "$lab" = "$marker" ] && expected=1
+		retry_query_count "http://localhost:$((base+909))/api/v1/query?query=stage10_lab${marker}_only_metric" "$expected"
+		retry_trace_count "http://localhost:$((base+686))/api/traces?service=stage10-lab${marker}-only&operation=trace-lab-${marker}-only&limit=20" "$expected"
+	done
+done
+
+# Every old owned pod UID disappears and a complete disjoint ready UID set
+# replaces it while all host endpoints and connect output remain stable.
+for lab in 2 4 5; do
+	namespace=tripgo-lab-0$lab
+	expected_pods=5; [ "$lab" -lt 4 ] || expected_pods=9
+	old_uids=$work/pods-before-$lab
+	capture_owned_pod_uids "$namespace" "$old_uids" "$expected_pods"
+	before_connect=$(cd "$work/lab$lab" && "$tripgoctl" connect)
+	kubectl_in_node -n "$namespace" delete pods --all --wait=false >/dev/null
+	wait_for_replacement_pods "$namespace" "$old_uids" "$expected_pods"
+	retry_ready "$lab"
+	after_connect=$(cd "$work/lab$lab" && "$tripgoctl" connect)
+	test "$before_connect" = "$after_connect"
+	base=$((20000+lab*1000)); psql "postgres://tripgo:tripgo@localhost:$((base+32))/tripgo?sslmode=disable" -Atc 'SELECT 1' | grep -x 1 >/dev/null
+	curl -fsS "http://localhost:$((base+300))/api/health" >/dev/null
+	curl -fsS "http://localhost:$((base+686))/" >/dev/null
+	curl -fsS "http://localhost:$((base+909))/-/ready" >/dev/null
+	curl -fsS -H 'Content-Type: application/json' --data-binary @"$work/metric-$lab.json" "http://localhost:$((base+318))/v1/metrics" >/dev/null
+	(cd "$root" && go run ./tests/otlp-grpc-smoke -endpoint "localhost:$((base+317))")
+	[ "$lab" -lt 4 ] || { curl -fsS "http://localhost:$((base+809))/health" >/dev/null; (cd "$root" && go run ./tests/push-grpc-smoke -endpoint "localhost:$((base+905))" -expect success); curl -fsS "http://localhost:$((base+81))/admin/health" >/dev/null; (cd "$root" && go run ./tests/kafka-smoke -endpoint "localhost:$((base+92))" -group "stage10-restart-$lab" -message "restart-$lab"); }
+done
+
+"$tripgoctl" cluster stop --yes
+cleanup_done=1
+rm -rf "$work"
+echo "stage10 parallel labs 2/4/5 isolation and endpoint stability smoke passed"

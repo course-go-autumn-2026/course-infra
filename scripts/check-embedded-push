@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Inspect every release CLI for exact embedded Push assets and architecture."""
+
+from __future__ import annotations
+
+import argparse
+import struct
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DOCKERFILE = ROOT / "internal" / "pushartifact" / "assets" / "Dockerfile"
+CONTRACTS = {
+    "OpenAPI contract": ROOT / "api" / "openapi" / "push-service.openapi.yaml",
+    "protobuf contract": ROOT / "api" / "proto" / "push" / "v1" / "push.proto",
+    "contract source manifest": ROOT / "api" / "source.json",
+}
+
+
+def elf_arch(payload: bytes) -> str:
+    if payload[:4] != b"\x7fELF" or len(payload) < 20:
+        raise ValueError("embedded Push Service payload is not ELF")
+    byte_order = "<" if payload[5] == 1 else ">" if payload[5] == 2 else ""
+    if not byte_order:
+        raise ValueError("embedded ELF has an invalid byte order")
+    machine = struct.unpack_from(byte_order + "H", payload, 18)[0]
+    try:
+        return {62: "amd64", 183: "arm64"}[machine]
+    except KeyError as error:
+        raise ValueError(f"unsupported embedded ELF machine {machine}") from error
+
+
+def extract_exact(cli: bytes, payload: bytes, name: str) -> bytes:
+    first = cli.find(payload)
+    if first < 0:
+        raise ValueError(f"does not contain exact embedded {name}")
+    if cli.find(payload, first + 1) >= 0:
+        raise ValueError(f"contains duplicate embedded {name}")
+    return cli[first : first + len(payload)]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--directory", type=Path, default=ROOT / "build" / "cross")
+    args = parser.parse_args()
+    artifacts = args.directory.resolve()
+    dockerfile = DOCKERFILE.read_bytes()
+    contracts = {name: path.read_bytes() for name, path in CONTRACTS.items()}
+    for os_name in ("darwin", "linux"):
+        for arch in ("amd64", "arm64"):
+            cli_path = artifacts / f"tripgoctl-{os_name}-{arch}"
+            push_path = artifacts / f"push-service-linux-{arch}"
+            if not cli_path.is_file() or not push_path.is_file():
+                print(f"missing cross-build artifact: {cli_path} or {push_path}", file=sys.stderr)
+                return 1
+            cli = cli_path.read_bytes()
+            push = push_path.read_bytes()
+            try:
+                extracted_push = extract_exact(cli, push, "Push Service binary")
+                extract_exact(cli, dockerfile, "Dockerfile")
+                for contract_name, contract in contracts.items():
+                    extract_exact(cli, contract, contract_name)
+                if elf_arch(extracted_push) != arch:
+                    raise ValueError(f"contains linux/{elf_arch(extracted_push)}, expected linux/{arch}")
+            except ValueError as error:
+                print(f"{cli_path.relative_to(ROOT)} {error}", file=sys.stderr)
+                return 1
+
+    print("All release CLIs contain exact Push assets and canonical contract bytes")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

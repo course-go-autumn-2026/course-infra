@@ -1,0 +1,47 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        cli-boundary:
+          files:
+            - "**/internal/cli/**"
+          deny:
+            - pkg: github.com/course-go-autumn-2026/tripgo-infra/internal/pushservice
+              desc: CLI must not import Push Service implementation
+        pushservice-boundary:
+          files:
+            - "**/internal/pushservice/**"
+          deny:
+            - pkg: github.com/course-go-autumn-2026/tripgo-infra/internal/cli
+              desc: Push Service must not import CLI implementation
+
+formatters:
+  enable:
+    - gci
+    - gofumpt
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/course-go-autumn-2026/tripgo-infra)

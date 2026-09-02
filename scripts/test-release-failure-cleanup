@@ -1,0 +1,26 @@
+#!/bin/sh
+# Regression: a failed post-build audit must make retained archives unavailable.
+set -eu
+source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-release-cleanup-test.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+mkdir -p "$tmp/scripts"
+cp "$source_root/scripts/run-release" "$tmp/scripts/run-release"
+cat >"$tmp/scripts/build-release" <<'EOF'
+#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+mkdir -p "$root/build/release"
+printf 'fixture archive\n' >"$root/build/release/tripgoctl_fixture.tar.gz"
+EOF
+cat >"$tmp/scripts/audit-release-cleanup" <<'EOF'
+#!/bin/sh
+exit 7
+EOF
+chmod +x "$tmp/scripts/"*
+if "$tmp/scripts/run-release" >/dev/null 2>&1; then
+	echo 'release wrapper accepted a failed cleanup audit' >&2
+	exit 1
+fi
+test ! -e "$tmp/build/release"
+echo 'Release audit-failure cleanup fixture passed'

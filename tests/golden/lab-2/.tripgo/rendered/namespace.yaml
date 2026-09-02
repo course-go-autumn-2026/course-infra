@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"

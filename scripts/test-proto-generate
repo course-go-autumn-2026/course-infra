@@ -1,0 +1,45 @@
+#!/bin/sh
+# Isolated regression: clean generation removes orphans and failed generation is non-destructive.
+set -eu
+source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-proto-generate-test.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+root=$tmp/root
+mkdir -p "$root/scripts" "$root/build/tools" "$root/internal/gen" "$root/api/proto"
+cp "$source_root/scripts/generate-proto" "$root/scripts/generate-proto"
+printf 'version: v2\nplugins:\n  - local: build/tools/protoc-gen-go\n    out: internal/gen\n' >"$root/buf.gen.yaml"
+printf 'orphan\n' >"$root/internal/gen/orphan.pb.go"
+cat >"$root/scripts/sync-contracts" <<'EOF'
+#!/bin/sh
+set -eu
+test "$1" = check
+: > contract-checked
+EOF
+cat >"$root/build/tools/buf" <<'EOF'
+#!/bin/sh
+set -eu
+test -f contract-checked || { echo 'generation ran before contract check' >&2; exit 9; }
+if test "${FAIL_GENERATION:-}" = 1; then exit 8; fi
+while test "$#" -gt 0; do
+	if test "$1" = --template; then config=$2; break; fi
+	shift
+done
+out=$(sed -n 's/^[[:space:]]*out: //p' "$config")
+mkdir -p "$out/push/v1"
+printf 'generated\n' >"$out/push/v1/push.pb.go"
+EOF
+cat >"$root/build/tools/protoc-gen-go" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cp "$root/build/tools/protoc-gen-go" "$root/build/tools/protoc-gen-go-grpc"
+chmod +x "$root/scripts/"* "$root/build/tools/"*
+"$root/scripts/generate-proto" >/dev/null
+test ! -e "$root/internal/gen/orphan.pb.go"
+test "$(cat "$root/internal/gen/push/v1/push.pb.go")" = generated
+printf 'keep\n' >"$root/internal/gen/keep.pb.go"
+if FAIL_GENERATION=1 "$root/scripts/generate-proto" >/dev/null 2>&1; then
+	echo 'expected failed generation' >&2; exit 1
+fi
+test "$(cat "$root/internal/gen/keep.pb.go")" = keep
+echo 'Proto generation fixture passed (orphan recovery and failed-generation preservation)'

@@ -1,0 +1,6 @@
+/build/
+/internal/pushartifact/generated/
+/internal/contractasset/generated/
+/.tripgo/
+/.env
+.DS_Store

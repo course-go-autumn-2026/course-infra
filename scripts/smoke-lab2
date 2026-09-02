@@ -1,0 +1,102 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tripgoctl=${TRIPGOCTL:-"$root/build/bin/tripgoctl"}
+
+for command in curl docker go grep jq psql; do
+	if ! command -v "$command" >/dev/null 2>&1; then
+		echo "stage6 smoke requires $command" >&2
+		exit 3
+	fi
+done
+
+if "$tripgoctl" cluster status >/dev/null 2>&1; then
+	echo "stage6 smoke requires no existing tripgo-local cluster" >&2
+	exit 4
+fi
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-stage6-smoke.XXXXXX")
+cleanup() {
+	"$tripgoctl" cluster stop --yes >/dev/null 2>&1 || true
+	rm -rf "$work"
+}
+trap cleanup EXIT HUP INT TERM
+
+cat >"$work/environment.toml" <<'EOF'
+schema_version = 1
+lab = 2
+components = ["postgres", "observability"]
+EOF
+
+retry_contains() {
+	url=$1
+	needle=$2
+	attempt=0
+	while [ "$attempt" -lt 30 ]; do
+		if curl -fsS "$url" 2>/dev/null | grep -F "$needle" >/dev/null; then
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		sleep 2
+	done
+	echo "timed out waiting for $needle at $url" >&2
+	curl -sS "$url" >&2 || true
+	return 1
+}
+
+"$tripgoctl" cluster start
+(
+	cd "$work"
+	"$tripgoctl" environment start
+	"$tripgoctl" environment status | grep -F 'Status:      ready' >/dev/null
+	"$tripgoctl" environment list | grep -F 'otel-collector,jaeger,prometheus,grafana' >/dev/null
+	"$tripgoctl" connect | grep -F 'Grafana     http://localhost:22300' >/dev/null
+	"$tripgoctl" connect | grep -F 'OTel gRPC   localhost:22317' >/dev/null
+	"$tripgoctl" connect | grep -F 'OTel HTTP   http://localhost:22318' >/dev/null
+	"$tripgoctl" connect | grep -F 'Jaeger      http://localhost:22686' >/dev/null
+	"$tripgoctl" connect | grep -F 'Prometheus  http://localhost:22909' >/dev/null
+
+	curl -fsS http://localhost:22300/api/health | grep -F 'ok' >/dev/null
+	curl -fsS http://localhost:22686/ >/dev/null
+	curl -fsS http://localhost:22909/-/ready >/dev/null
+	datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Prometheus)
+	printf '%s' "$datasource" | grep -F 'http://prometheus:9090' >/dev/null
+	datasource_uid=$(printf '%s' "$datasource" | jq -er .uid)
+
+	# Runtime status must reject a broken namespace-local trace pipeline.
+	docker exec tripgo-local-control-plane kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+		-n tripgo-lab-02 delete service jaeger-otlp >/dev/null
+	if "$tripgoctl" environment status; then
+		echo 'environment status reported ready without jaeger-otlp' >&2
+		exit 1
+	fi
+	"$tripgoctl" environment start >/dev/null
+
+	now=$(($(date +%s) * 1000000000))
+	cat >trace.json <<EOF
+{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"tripgo-stage6-smoke"}}]},"scopeSpans":[{"scope":{"name":"stage6-smoke"},"spans":[{"traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","name":"stage6-trace","kind":1,"startTimeUnixNano":"$now","endTimeUnixNano":"$((now + 1000000))"}]}]}]}
+EOF
+	curl -fsS -H 'Content-Type: application/json' --data-binary @trace.json http://localhost:22318/v1/traces >/dev/null
+	retry_contains 'http://localhost:22686/api/traces?service=tripgo-stage6-smoke&operation=stage6-trace&limit=20' 'stage6-trace'
+
+	(cd "$root" && go run ./tests/otlp-grpc-smoke -endpoint localhost:22317)
+	retry_contains 'http://localhost:22686/api/traces?service=tripgo-stage6-grpc-smoke&operation=stage6-grpc-trace&limit=20' 'stage6-grpc-trace'
+
+	cat >metric.json <<EOF
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"tripgo-stage6-smoke"}}]},"scopeMetrics":[{"scope":{"name":"stage6-smoke"},"metrics":[{"name":"stage6_smoke_metric","gauge":{"dataPoints":[{"timeUnixNano":"$now","asDouble":42}]}}]}]}]}
+EOF
+	curl -fsS -H 'Content-Type: application/json' --data-binary @metric.json http://localhost:22318/v1/metrics >/dev/null
+	retry_contains 'http://localhost:22909/api/v1/query?query=stage6_smoke_metric' 'stage6_smoke_metric'
+	retry_contains "http://localhost:22300/api/datasources/proxy/uid/$datasource_uid/api/v1/query?query=stage6_smoke_metric" 'stage6_smoke_metric'
+
+	database_url=$(sed -n 's/^DATABASE_URL=//p' .env)
+	psql "$database_url" -v ON_ERROR_STOP=1 -c "CREATE TABLE stage6_persistence (value text NOT NULL); INSERT INTO stage6_persistence VALUES ('persisted');" >/dev/null
+	"$tripgoctl" environment stop
+	"$tripgoctl" cluster status | grep -F 'Environments: 1 known, 0 running' >/dev/null
+	"$tripgoctl" environment start
+	test "$(psql "$database_url" -Atc 'SELECT value FROM stage6_persistence LIMIT 1')" = persisted
+	"$tripgoctl" environment reset --yes
+)
+
+echo "stage6 lab 2 observability smoke passed"

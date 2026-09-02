@@ -1,0 +1,13 @@
+{{ define "labels4" }}    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "{{ .LabLabel }}"
+    tripgo.course/environment: {{ .Namespace }}
+{{ end }}{{ define "labels8" }}        app.kubernetes.io/managed-by: tripgoctl
+        app.kubernetes.io/part-of: tripgo-local
+        tripgo.course/lab: "{{ .LabLabel }}"
+        tripgo.course/environment: {{ .Namespace }}
+{{ end }}{{ define "annotations4" }}    tripgo.course/generator-version: {{ printf "%q" .Version }}
+    tripgo.course/cluster-id: {{ printf "%q" .ClusterID }}
+{{ end }}{{ define "annotations8" }}        tripgo.course/generator-version: {{ printf "%q" .Version }}
+        tripgo.course/cluster-id: {{ printf "%q" .ClusterID }}
+{{ end }}

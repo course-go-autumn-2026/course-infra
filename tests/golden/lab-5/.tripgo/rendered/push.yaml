@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: push-service
+  namespace: tripgo-lab-05
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "05"
+    tripgo.course/environment: tripgo-lab-05
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: push-service, app.kubernetes.io/instance: tripgo-lab-05-push-service}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: tripgoctl
+        app.kubernetes.io/part-of: tripgo-local
+        tripgo.course/lab: "05"
+        tripgo.course/environment: tripgo-lab-05
+        app.kubernetes.io/name: push-service
+        app.kubernetes.io/instance: tripgo-lab-05-push-service
+      annotations:
+        tripgo.course/generator-version: "v1.0.0"
+        tripgo.course/cluster-id: "golden-cluster-id"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: push-service
+          image: localhost:5001/tripgo-push-service@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: HTTP_ADDR, value: ":8090"}
+            - {name: GRPC_ADDR, value: ":9095"}
+            - {name: LOG_LEVEL, value: info}
+            - {name: SHUTDOWN_TIMEOUT, value: 10s}
+            - {name: PUSH_LATENCY_MS, value: "0"}
+            - {name: PUSH_FAIL_RATE, value: "0"}
+            - {name: PUSH_RATE_LIMIT_RPS, value: "0"}
+            - {name: PUSH_RATE_LIMIT_BURST, value: "40"}
+          ports:
+            - {name: http, containerPort: 8090}
+            - {name: grpc, containerPort: 9095}
+          startupProbe: {httpGet: {path: /health, port: http}, periodSeconds: 2, failureThreshold: 30}
+          readinessProbe: {grpc: {port: 9095, service: ""}, periodSeconds: 3}
+          livenessProbe: {httpGet: {path: /health, port: http}, initialDelaySeconds: 10}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: push-service
+  namespace: tripgo-lab-05
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "05"
+    tripgo.course/environment: tripgo-lab-05
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: push-service, app.kubernetes.io/instance: tripgo-lab-05-push-service}
+  ports:
+    - {name: http, port: 8090, targetPort: http, nodePort: 30508}
+    - {name: grpc, port: 9095, targetPort: grpc, nodePort: 30509}

@@ -1,0 +1,106 @@
+name: native four-platform release smoke (no publish)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '**.go'
+      - 'api/**'
+      - 'internal/pushartifact/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - '.github/workflows/release-smoke-platforms.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-linux:
+    name: linux/${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Initialize canonical contract checkout read-only
+        run: |
+          git config --global url.https://github.com/course-go-autumn-2026/homework.git.insteadOf git@github.com:course-go-autumn-2026/homework.git
+          git submodule update --init --recursive --depth 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+      - name: Install smoke prerequisites
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq postgresql-client
+      - name: Build deterministic local-only release
+        run: |
+          make proto-tools-install
+          make release VERSION=ci COMMIT="$(git rev-parse HEAD)" SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+      - name: Validate final archive through Docker and managed registry
+        run: make release-platform-smoke
+      - name: Safe runtime cleanup
+        if: always()
+        run: ./scripts/cleanup-release-smoke
+
+  native-darwin:
+    name: darwin/${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+      - name: Initialize canonical contract checkout read-only
+        run: |
+          git config --global url.https://github.com/course-go-autumn-2026/homework.git.insteadOf git@github.com:course-go-autumn-2026/homework.git
+          git submodule update --init --recursive --depth 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+      - name: Install and start native Docker engine
+        run: |
+          brew install colima docker jq libpq
+          echo "$(brew --prefix libpq)/bin" >> "$GITHUB_PATH"
+          colima start --cpu 4 --memory 10 --disk 40
+          docker version
+      - name: Confirm native runner architecture
+        run: |
+          case "${{ matrix.arch }}:$(uname -m)" in
+            amd64:x86_64|arm64:arm64) ;;
+            *) echo "runner architecture does not match matrix" >&2; exit 1 ;;
+          esac
+      - name: Build deterministic local-only release
+        run: |
+          make proto-tools-install
+          make release VERSION=ci COMMIT="$(git rev-parse HEAD)" SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+      - name: Validate final archive through Docker and managed registry
+        run: make release-platform-smoke
+      - name: Safe runtime cleanup
+        if: always()
+        run: |
+          ./scripts/cleanup-release-smoke
+          colima delete --force >/dev/null 2>&1 || true

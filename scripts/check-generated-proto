@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Generate protobuf bindings into a clean tree and compare the exact output."""
+
+from __future__ import annotations
+
+import filecmp
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+GENERATED = ROOT / "internal" / "gen"
+BUF = ROOT / "build" / "tools" / "buf"
+PLUGINS = [ROOT / "build" / "tools" / "protoc-gen-go", ROOT / "build" / "tools" / "protoc-gen-go-grpc"]
+CONFIG = ROOT / "buf.gen.yaml"
+CONTRACT_CHECK = ROOT / "scripts" / "sync-contracts"
+
+
+def files_under(root: Path) -> dict[str, Path]:
+    if not root.is_dir():
+        return {}
+    return {
+        str(path.relative_to(root)): path
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def main() -> int:
+    contract_check = subprocess.run([str(CONTRACT_CHECK), "check"], cwd=ROOT, check=False)
+    if contract_check.returncode != 0:
+        return contract_check.returncode
+
+    missing = [path for path in [BUF, *PLUGINS] if not path.is_file()]
+    if missing:
+        print("protobuf tools are missing; run: make proto-tools-install", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="tripgo-proto-check-") as temporary:
+        temporary_root = Path(temporary)
+        clean_output = temporary_root / "generated"
+        # Keep the pinned repository config authoritative; only redirect its output.
+        redirected = CONFIG.read_text().replace("out: internal/gen", f"out: {clean_output}")
+        redirected_config = temporary_root / "buf.gen.yaml"
+        redirected_config.write_text(redirected)
+        subprocess.run(
+            [str(BUF), "generate", "api/proto", "--template", str(redirected_config)],
+            cwd=ROOT,
+            check=True,
+        )
+
+        committed = files_under(GENERATED)
+        regenerated = files_under(clean_output)
+        committed_names = set(committed)
+        regenerated_names = set(regenerated)
+        missing_files = sorted(regenerated_names - committed_names)
+        orphan_files = sorted(committed_names - regenerated_names)
+        changed_files = sorted(
+            name
+            for name in committed_names & regenerated_names
+            if not filecmp.cmp(committed[name], regenerated[name], shallow=False)
+        )
+        if missing_files or orphan_files or changed_files:
+            if missing_files:
+                print("missing generated files: " + ", ".join(missing_files), file=sys.stderr)
+            if orphan_files:
+                print("orphan generated files: " + ", ".join(orphan_files), file=sys.stderr)
+            if changed_files:
+                print("changed generated files: " + ", ".join(changed_files), file=sys.stderr)
+            print("generated protobuf bindings are stale; run: make proto-generate", file=sys.stderr)
+            return 1
+
+    print("Generated protobuf tree exactly matches clean generation")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

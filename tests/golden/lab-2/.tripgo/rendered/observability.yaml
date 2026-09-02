@@ -1,0 +1,454 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: {endpoint: 0.0.0.0:4317}
+          http: {endpoint: 0.0.0.0:4318}
+    processors:
+      batch: {}
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger-otlp:4317
+        tls: {insecure: true}
+      prometheus:
+        endpoint: 0.0.0.0:8889
+    service:
+      pipelines:
+        traces: {receivers: [otlp], processors: [batch], exporters: [otlp/jaeger]}
+        metrics: {receivers: [otlp], processors: [batch], exporters: [prometheus]}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+    scrape_configs:
+      - job_name: otel-collector
+        static_configs:
+          - targets: [otel-collector-metrics:8889]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: otel-collector, app.kubernetes.io/instance: tripgo-lab-02-otel-collector}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: tripgoctl
+        app.kubernetes.io/part-of: tripgo-local
+        tripgo.course/lab: "02"
+        tripgo.course/environment: tripgo-lab-02
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/instance: tripgo-lab-02-otel-collector
+      annotations:
+        tripgo.course/generator-version: "v1.0.0"
+        tripgo.course/cluster-id: "golden-cluster-id"
+    spec:
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: otel-collector
+          image: docker.io/otel/opentelemetry-collector-contrib@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+          args: [--config=/etc/otelcol/config.yaml]
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otlp-http, containerPort: 4318}
+            - {name: prometheus, containerPort: 8889}
+          readinessProbe:
+            tcpSocket: {port: otlp-grpc}
+            periodSeconds: 3
+          livenessProbe:
+            tcpSocket: {port: otlp-grpc}
+            initialDelaySeconds: 10
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: otel-collector, app.kubernetes.io/instance: tripgo-lab-02-otel-collector}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc, nodePort: 30205}
+    - {name: otlp-http, port: 4318, targetPort: otlp-http, nodePort: 30206}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-metrics
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: otel-collector, app.kubernetes.io/instance: tripgo-lab-02-otel-collector}
+  ports:
+    - {name: prometheus, port: 8889, targetPort: prometheus}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: jaeger, app.kubernetes.io/instance: tripgo-lab-02-jaeger}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: tripgoctl
+        app.kubernetes.io/part-of: tripgo-local
+        tripgo.course/lab: "02"
+        tripgo.course/environment: tripgo-lab-02
+        app.kubernetes.io/name: jaeger
+        app.kubernetes.io/instance: tripgo-lab-02-jaeger
+      annotations:
+        tripgo.course/generator-version: "v1.0.0"
+        tripgo.course/cluster-id: "golden-cluster-id"
+    spec:
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: jaeger
+          image: docker.io/jaegertracing/jaeger@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
+          ports:
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: ui, containerPort: 16686}
+          readinessProbe:
+            tcpSocket: {port: ui}
+            periodSeconds: 3
+          livenessProbe:
+            tcpSocket: {port: ui}
+            initialDelaySeconds: 10
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-otlp
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  selector: {app.kubernetes.io/name: jaeger, app.kubernetes.io/instance: tripgo-lab-02-jaeger}
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: jaeger, app.kubernetes.io/instance: tripgo-lab-02-jaeger}
+  ports:
+    - {name: ui, port: 16686, targetPort: ui, nodePort: 30207}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: prometheus, app.kubernetes.io/instance: tripgo-lab-02-prometheus}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: tripgoctl
+        app.kubernetes.io/part-of: tripgo-local
+        tripgo.course/lab: "02"
+        tripgo.course/environment: tripgo-lab-02
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/instance: tripgo-lab-02-prometheus
+      annotations:
+        tripgo.course/generator-version: "v1.0.0"
+        tripgo.course/cluster-id: "golden-cluster-id"
+    spec:
+      securityContext:
+        fsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: prometheus
+          image: docker.io/prom/prometheus@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+          args: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus]
+          ports:
+            - {name: http, containerPort: 9090}
+          readinessProbe: {httpGet: {path: /-/ready, port: http}, periodSeconds: 3}
+          livenessProbe: {httpGet: {path: /-/healthy, port: http}, initialDelaySeconds: 10}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+        - name: data
+          persistentVolumeClaim: {claimName: prometheus-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: prometheus, app.kubernetes.io/instance: tripgo-lab-02-prometheus}
+  ports:
+    - {name: http, port: 9090, targetPort: http, nodePort: 30210}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: grafana, app.kubernetes.io/instance: tripgo-lab-02-grafana}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: tripgoctl
+        app.kubernetes.io/part-of: tripgo-local
+        tripgo.course/lab: "02"
+        tripgo.course/environment: tripgo-lab-02
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/instance: tripgo-lab-02-grafana
+      annotations:
+        tripgo.course/generator-version: "v1.0.0"
+        tripgo.course/cluster-id: "golden-cluster-id"
+    spec:
+      securityContext:
+        fsGroup: 472
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: grafana
+          image: docker.io/grafana/grafana@sha256:3fd54ae1214669f8355f065ec9f6445d5279a3d77095ab048ca045685272429b
+          env:
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Admin}
+            - {name: GF_AUTH_DISABLE_LOGIN_FORM, value: "true"}
+          ports:
+            - {name: http, containerPort: 3000}
+          readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 3}
+          livenessProbe: {httpGet: {path: /api/health, port: http}, initialDelaySeconds: 10}
+          resources:
+            requests: {cpu: 25m, memory: 96Mi}
+            limits: {memory: 384Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/grafana}
+            - {name: provisioning, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: grafana-data}
+        - name: provisioning
+          configMap: {name: grafana-provisioning}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+spec:
+  type: NodePort
+  selector: {app.kubernetes.io/name: grafana, app.kubernetes.io/instance: tripgo-lab-02-grafana}
+  ports:
+    - {name: http, port: 3000, targetPort: http, nodePort: 30204}

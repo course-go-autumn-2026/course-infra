@@ -1,0 +1,61 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+work=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-stage7-container.XXXXXX")
+containers=
+images=
+cleanup() {
+	for container in $containers; do docker rm -f "$container" >/dev/null 2>&1 || true; done
+	for image in $images; do docker image rm -f "$image" >/dev/null 2>&1 || true; done
+	rm -rf "$work"
+}
+trap cleanup EXIT HUP INT TERM
+
+for command in curl docker; do
+	if ! command -v "$command" >/dev/null 2>&1; then
+		echo "stage7 container smoke requires $command" >&2
+		exit 3
+	fi
+done
+
+index=0
+for arch in amd64 arm64; do
+	index=$((index + 1))
+	context="$work/$arch"
+	mkdir -p "$context"
+	cp "$root/internal/pushartifact/assets/Dockerfile" "$context/Dockerfile"
+	cp "$root/build/cross/push-service-linux-$arch" "$context/push-service"
+	image="tripgo-push-stage7-smoke:$arch"
+	container="tripgo-push-stage7-$arch"
+	port=$((18090 + index))
+	images="$images $image"
+	containers="$containers $container"
+	docker buildx build --platform "linux/$arch" --load -t "$image" "$context" >/dev/null
+	test "$(docker image inspect -f '{{.Config.User}}' "$image")" = '65532:65532'
+	docker run -d --name "$container" --platform "linux/$arch" \
+		-p "127.0.0.1:$port:8090" \
+		-e HTTP_ADDR=:8090 -e GRPC_ADDR=:9095 -e PUSH_RATE_LIMIT_RPS=0 \
+		"$image" >/dev/null
+	attempt=0
+	while [ "$attempt" -lt 100 ]; do
+		if curl -fsS "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
+			break
+		fi
+		if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -F true >/dev/null; then
+			docker logs "$container" >&2 || true
+			exit 1
+		fi
+		attempt=$((attempt + 1))
+		sleep 0.1
+	done
+	if [ "$attempt" -eq 100 ]; then
+		echo "linux/$arch Push Service image did not become healthy" >&2
+		exit 1
+	fi
+	docker stop -t 10 "$container" >/dev/null
+	docker rm "$container" >/dev/null
+	containers=$(printf '%s' "$containers" | sed "s/ $container//")
+done
+
+echo 'stage7 amd64/arm64 scratch image smoke passed'

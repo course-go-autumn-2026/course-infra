@@ -1,0 +1,42 @@
+#!/bin/sh
+# Remove only runtime state created by scripts/smoke-release-platform.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+state=${TRIPGO_RELEASE_SMOKE_STATE:-"$root/build/.release-smoke-state"}
+test -d "$state" || exit 0
+
+failed=0
+# cluster stop verifies the persisted cluster identity before deleting anything.
+if command -v docker >/dev/null 2>&1 && docker version >/dev/null 2>&1; then
+	existing=$(docker ps -a --filter 'name=^/tripgo-local' --format '{{.Names}}')
+	if test -n "$existing" && test -f "$state/cli"; then
+		tripgoctl=$(cat "$state/cli")
+		if ! test -x "$tripgoctl" || ! "$tripgoctl" cluster stop --yes >/dev/null 2>&1; then
+			failed=1
+		fi
+	fi
+	current="$state/current-images"
+	docker images --filter reference='localhost:5001/tripgo-push-service:*' \
+		--format '{{.Repository}}:{{.Tag}}' | sort -u >"$current"
+	if test -f "$state/baseline-images"; then
+		comm -13 "$state/baseline-images" "$current" >"$state/created-images"
+	else
+		: >"$state/created-images"
+	fi
+	while IFS= read -r reference; do
+		test -n "$reference" || continue
+		docker image rm -f "$reference" >/dev/null 2>&1 || true
+	done <"$state/created-images"
+	if test -n "$(docker ps -a --filter 'name=^/tripgo-local' --format '{{.Names}}')"; then
+		failed=1
+	fi
+else
+	failed=1
+fi
+
+if test "$failed" -ne 0; then
+	echo "release smoke cleanup could not prove and remove owned runtime state; state retained at $state" >&2
+	exit 1
+fi
+rm -rf "$state"
