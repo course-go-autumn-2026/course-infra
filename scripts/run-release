@@ -1,19 +1,9 @@
 #!/bin/sh
-# Run the complete release gate and remove publishable output after any failure.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-if "$root/scripts/build-release"; then
-	:
-else
+"$root/scripts/build-release" && "$root/scripts/audit-release-cleanup" || {
 	status=$?
 	rm -rf "$root/build/release"
 	exit "$status"
-fi
-if "$root/scripts/audit-release-cleanup"; then
-	:
-else
-	status=$?
-	rm -rf "$root/build/release"
-	exit "$status"
-fi
+}

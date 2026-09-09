@@ -22,15 +22,6 @@ type sourceManifest struct {
 	} `json:"files"`
 }
 
-// OpenAPI returns a copy of the embedded canonical OpenAPI contract.
-func OpenAPI() []byte { return append([]byte(nil), embeddedOpenAPI()...) }
-
-// Proto returns a copy of the embedded canonical protobuf contract.
-func Proto() []byte { return append([]byte(nil), embeddedProto()...) }
-
-// Manifest returns a copy of the embedded source commit and SHA metadata.
-func Manifest() []byte { return append([]byte(nil), embeddedManifest()...) }
-
 // ValidateLinked verifies that a tagged release contains both contracts matching its manifest.
 func ValidateLinked() error {
 	openapi, proto, manifest := embeddedOpenAPI(), embeddedProto(), embeddedManifest()

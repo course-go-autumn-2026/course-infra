@@ -147,7 +147,7 @@ func (s *Service) Start(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	if contains(clusters, Name) {
+	if slices.Contains(clusters, Name) {
 		progress.Report(ctx, progress.Stage, "Verifying existing cluster")
 		return s.verifyExisting(ctx, configHash)
 	}
@@ -406,7 +406,7 @@ func (s *Service) Stop(ctx context.Context, expectedNamespaces []string) error {
 	if err != nil {
 		return err
 	}
-	clusterExists := contains(clusters, Name)
+	clusterExists := slices.Contains(clusters, Name)
 	registryExists, err := s.containerExists(ctx, RegistryContainer)
 	if err != nil {
 		return err
@@ -626,15 +626,6 @@ func setMembership(values []string, target string, present bool) []string {
 	}
 	slices.Sort(result)
 	return result
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 func joinInts(values []int) string {

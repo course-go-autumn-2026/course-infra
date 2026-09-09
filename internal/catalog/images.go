@@ -35,16 +35,6 @@ var images = []Image{
 	{Name: "push-service", Repository: LocalPushImageRepository, Platforms: []string{"linux/amd64", "linux/arm64"}, Published: false},
 }
 
-// Images returns a deep copy of the image catalog.
-func Images() []Image {
-	result := make([]Image, len(images))
-	copy(result, images)
-	for index := range result {
-		result[index].Platforms = append([]string(nil), result[index].Platforms...)
-	}
-	return result
-}
-
 // ImageByName looks up an image by its stable catalog name.
 func ImageByName(name string) (Image, bool) {
 	for _, image := range images {

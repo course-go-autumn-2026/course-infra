@@ -1136,20 +1136,6 @@ func removeGenerated(path string, directory bool) error {
 		} else if renderedErr != nil && !errors.Is(renderedErr, os.ErrNotExist) {
 			return fmt.Errorf("inspect generated rendered directory: %w", renderedErr)
 		}
-		legacyLock := filepath.Join(path, "environment.lock")
-		if lockInfo, lockErr := os.Lstat(legacyLock); lockErr == nil && lockInfo.Mode()&os.ModeSymlink == 0 && lockInfo.Mode().IsRegular() {
-			content, readErr := os.ReadFile(legacyLock) // #nosec G304 -- path is constrained beneath the project-local .tripgo directory.
-			if readErr != nil {
-				return fmt.Errorf("read legacy environment.lock: %w", readErr)
-			}
-			if bytes.HasPrefix(content, []byte(envMarker+"\n")) {
-				if err := os.Remove(legacyLock); err != nil && !errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("remove legacy environment.lock: %w", err)
-				}
-			}
-		} else if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
-			return fmt.Errorf("inspect legacy environment.lock: %w", lockErr)
-		}
 		entries, err := os.ReadDir(path)
 		if err != nil {
 			return fmt.Errorf("inspect generated directory contents: %w", err)

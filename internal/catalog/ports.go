@@ -42,11 +42,6 @@ var endpoints = []Endpoint{
 	{Name: "prometheus", Component: Observability, HostOffset: 909, NodePortOffset: 10, ContainerPort: 9090},
 }
 
-// Endpoints returns all mappings reserved for every lab.
-func Endpoints() []Endpoint {
-	return append([]Endpoint(nil), endpoints...)
-}
-
 // Ports resolves all reserved mappings for a lab. Cluster creation uses all ten
 // mappings even when the lab does not deploy every component.
 func Ports(lab int) ([]Port, bool) {
