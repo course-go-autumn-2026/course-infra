@@ -3,7 +3,7 @@
 Статус: утверждён на gate-ревью этапа 0. Дата: 2026-09-01.
 
 Исходный план: `homework/memory-bank/tripgo-infra-implementation-plan.md`.
-Этот документ фиксирует решения этапа 0 для реализации в `tripgo-infra`.
+Этот документ фиксирует решения этапа 0 для `tripgo-infra`.
 
 ## 1. Scope и границы артефактов
 
@@ -24,9 +24,9 @@ tripgoctl
 ```
 
 На этапе 1 локальный `make verify` отдельно собирает и тестирует оба бинарника.
-На этапе 3 принято новое packaging-решение: remote OCI Push Service не
-публикуется. Self-contained CLI releases собираются локально и публикуются из
-проверенных `main`-сборок CI; текущий процесс описан в [`release-v1.md`](release-v1.md).
+На этапе 3 решено не публиковать образ Push Service во внешнем OCI registry.
+Самодостаточные релизы CLI собираются локально и публикуются из проверенных
+`main`-сборок CI. Текущий процесс описан в [`release-v1.md`](release-v1.md).
 
 Границы пакетов:
 
@@ -36,9 +36,9 @@ cmd/push-service       -> internal/pushservice
 internal/shared        -> только узкие технические примитивы без domain logic
 ```
 
-`internal/cli` и `internal/pushservice` не импортируют друг друга. Kubernetes,
-kind lifecycle и студенческий cwd принадлежат CLI. HTTP/gRPC push behaviour
-принадлежит Push Service. `templates/` встраиваются в CLI. Канонические API
+`internal/cli` и `internal/pushservice` не импортируют друг друга. CLI отвечает
+за Kubernetes, жизненный цикл kind и cwd студента. Push Service отвечает за
+поведение push по HTTP/gRPC. `templates/` встраиваются в CLI. Канонические API
 принадлежат homework.
 
 Студенческий `trip-service` всегда запускается на хосте. Инфраструктура не
@@ -55,21 +55,21 @@ kind lifecycle и студенческий cwd принадлежат CLI. HTTP/
 | Field manager | `tripgoctl` |
 | Cluster | один `tripgo-local` |
 
-Node image и digest взяты из release notes kind v0.27.0. CLI работает только с
-кластером, содержащим собственный immutable identity marker. Kube-context сам по
-себе не считается достаточным доказательством ownership.
+Образ узла и digest взяты из release notes kind v0.27.0. CLI работает только с
+кластером, содержащим его неизменяемый маркер identity. Самого kube-context
+недостаточно для подтверждения владения.
 
-SSA выполняется с field manager `tripgoctl`; force conflicts по умолчанию
-запрещён. Конфликт с полями другого manager возвращает exit code `4` и
-диагностику. Это предотвращает молчаливое затирание ручных изменений.
+SSA выполняется с field manager `tripgoctl`; принудительное разрешение конфликтов
+по умолчанию запрещено. При конфликте с полями другого manager возвращаются код
+завершения `4` и диагностика: ручные изменения не затираются без предупреждения.
 
 ## 3. Публичный configuration contract
 
 `./environment.toml` декодируется строго: неизвестные поля, неизвестные и
-повторяющиеся компоненты запрещены. Состав компонентов сравнивается как set:
-порядок в пользовательском TOML не влияет на валидность или генерацию.
-Canonical fixtures используют порядок таблицы ниже, а генератор всегда
-нормализует вход во внутренний стабильный порядок.
+повторяющиеся компоненты запрещены. Состав компонентов сравнивается как множество:
+порядок в пользовательском TOML не влияет на корректность или генерацию.
+Канонические фикстуры используют порядок таблицы ниже, а генератор всегда
+приводит входные данные к внутреннему стабильному порядку.
 
 ```toml
 schema_version = 1
@@ -82,11 +82,11 @@ FEATURE_FLAG = "enabled"
 ```
 
 `env` — необязательная таблица строк. Имена соответствуют
-`[A-Za-z_][A-Za-z0-9_]*`, значения являются literal single-line strings без
-interpolation, NUL и переводов строк. Имена всех встроенных переменных
-зарезервированы сразу для labs 1–5 и не могут быть переопределены. Custom env
-добавляются после встроенных в лексикографическом порядке. Пустая или
-отсутствующая таблица сохраняет минимальный исходный контракт.
+`[A-Za-z_][A-Za-z0-9_]*`. Значения хранятся буквально в одной строке, без
+интерполяции, NUL и переводов строк. Имена всех встроенных переменных
+зарезервированы сразу для работ 1–5 и не могут быть переопределены.
+Пользовательские env добавляются после встроенных в лексикографическом порядке.
+Пустая или отсутствующая таблица сохраняет минимальный исходный контракт.
 
 | Lab | Components |
 |---:|---|
@@ -97,8 +97,8 @@ interpolation, NUL и переводов строк. Имена всех вст�
 | 5 | `postgres, observability, push, redpanda` |
 
 Формальная модель: [`../schemas/environment-v1.schema.json`](../schemas/environment-v1.schema.json).
-Парсер сначала проверяет TOML syntax/types, затем эквивалентные schema и
-cross-field constraints. Ошибка содержит путь, поле и ожидаемое значение.
+Парсер сначала проверяет синтаксис и типы TOML, затем ограничения, эквивалентные
+схеме, и связи между полями. Ошибка содержит путь, поле и ожидаемое значение.
 
 ## 4. Ports
 
@@ -109,9 +109,9 @@ host base     = 20000 + N * 1000
 nodePort base = 30000 + N * 100
 ```
 
-Все mappings слушают только `127.0.0.1`, protocol TCP. `cluster start`
-резервирует все 50 lab mappings, включая компоненты, не используемые конкретной
-работой, и отдельно managed registry port `127.0.0.1:5001`.
+Все проброшенные порты слушают только `127.0.0.1` по TCP. `cluster start`
+резервирует все 50 пробросов портов работ, в том числе для неиспользуемых в них
+компонентов, и отдельно порт управляемого registry `127.0.0.1:5001`.
 
 | # | Component endpoint | Host offset | NodePort |
 |---:|---|---:|---:|
@@ -131,10 +131,10 @@ nodePort base = 30000 + N * 100
 
 Проверка формул:
 
-- host blocks `21000..21999` — `25000..25999` не пересекаются;
-- реально используемые offsets уникальны и входят в block;
+- блоки портов хоста `21000..21999` — `25000..25999` не пересекаются;
+- используемые смещения уникальны и входят в блок;
 - NodePort `30101..30510` входит в стандартный диапазон `30000..32767`;
-- port студенческого HTTP `8080` и gRPC `9091` не управляются CLI.
+- CLI не управляет портами студенческого HTTP `8080` и gRPC `9091`.
 
 ## 5. Namespace и ownership
 
@@ -156,40 +156,43 @@ tripgo.course/generator-version: v1.0.0
 tripgo.course/cluster-id: <generated-cluster-identity>
 ```
 
-Selector labels компонентов отделены от ownership labels и неизменны в v1.
-Удаление namespace/reset разрешено только при совпадении имени, всех ownership
-labels и cluster identity annotation. CLI не удаляет отдельные произвольные
-ресурсы без ownership.
+Метки селекторов компонентов отделены от меток владения и неизменны в v1.
+Удаление namespace/reset разрешено только при совпадении имени, всех меток
+владения и аннотации identity кластера. CLI не удаляет произвольные отдельные
+ресурсы, которые ему не принадлежат.
 
 ## 6. Lifecycle
 
 Подробный UX: [`cli-contract-v1.md`](cli-contract-v1.md).
 
-- `cluster stop`: показывает environments, требует `yes`/`--yes`, удаляет весь
-  kind cluster и все данные;
-- `environment stop`: scale-to-zero, сохраняет namespace и PVC;
-- `environment start`: reconcile + scale-up + readiness + atomic `.env`;
+- `cluster stop`: показывает окружения, требует `yes`/`--yes`, удаляет весь
+  кластер kind и все данные;
+- `environment stop`: уменьшает число реплик до нуля, сохраняет namespace и PVC;
+- `environment start`: приводит окружение к требуемому состоянию, увеличивает
+  число реплик, ждёт готовности и атомарно записывает `.env`;
 - `environment reset`: требует `yes`/`--yes`, удаляет namespace и PVC;
-- `connect`: read-only, печатает постоянные endpoints и завершается.
+- `connect`: только читает состояние, печатает постоянные адреса и завершается.
 
-Несколько labs могут быть ready одновременно. Один lab соответствует ровно
+Несколько работ могут быть готовы одновременно. Одна работа соответствует ровно
 одному namespace.
 
 ## 7. `.env` и локальное состояние
 
-`.env` заменяется только при наличии точного tripgoctl marker в первой строке.
-Запись идёт через temp file в том же каталоге, `fsync`, atomic rename. При
-пользовательском `.env` операция завершается до применения Kubernetes-изменений,
-чтобы исключить готовую инфраструктуру без пригодного config-файла.
+`.env` заменяется только при наличии точного маркера tripgoctl в первой строке.
+Запись идёт через временный файл в том же каталоге, `fsync` и атомарное
+переименование. При пользовательском `.env` операция завершается до изменений
+Kubernetes, чтобы не оставлять готовую инфраструктуру без пригодного файла
+конфигурации.
 
-`.tripgo/rendered` — диагностическая проекция последнего desired state и
+`.tripgo/rendered` хранит последнее требуемое состояние для диагностики и
 атомарно обновляется при каждом `environment start`; локальный lock не хранится.
-Фактические ownership, cluster identity, image digests и readiness проверяются
-по Kubernetes API. Неизвестные соседние файлы в `.tripgo` сохраняются.
+Фактические принадлежность ресурсов, identity кластера, digest образов и готовность
+проверяются по Kubernetes API. Неизвестные соседние файлы в `.tripgo` сохраняются.
 
-Глобальный state хранится в OS user cache/config directory и содержит kind
-version, cluster identity, config hash и известные namespace. Kubernetes
-ownership остаётся источником истины при восстановлении повреждённого state.
+Глобальное состояние хранится в пользовательском каталоге кеша/конфигурации ОС
+и содержит версию kind, identity кластера, hash конфигурации и известные namespace.
+При восстановлении повреждённого состояния источником истины остаются признаки
+владения в Kubernetes.
 
 ## 8. Синхронизация Push contracts
 
@@ -206,36 +209,45 @@ homework/contracts/openapi/push-service.openapi.yaml
 homework/contracts/proto/push/v1/push.proto
 ```
 
-`api/openapi/push-service.openapi.yaml` и `api/proto/push/v1/push.proto` —
-relative symlink непосредственно на эти canonical файлы в submodule; вторые
-копии contract content не хранятся. `api/source.json` фиксирует repository,
-точный submodule commit, superproject gitlink, relative link targets и SHA-256
-canonical content. Contract gate также требует, чтобы каждый canonical byte
-stream точно присутствовал в pinned commit, и отклоняет dirty contract paths.
-`scripts/sync-contracts sync` атомарно создаёт или исправляет links, а `check`
-проверяет тип link, точный target, существование canonical файла и metadata без
-fallback copy. Поэтому initialized submodule обязателен для build/check; Windows
-не поддерживается v1, а заявленные Darwin/Linux platforms поддерживают symlink.
-Поскольку Go `go:embed` не следует symlink и запрещает `..`, release build после
-contract check атомарно staging-ит проверенные bytes в ignored package-local
-`internal/contractasset/generated/`. Tagged `tripgoctl` напрямую импортирует
-provider и встраивает OpenAPI, proto и source manifest; cross-build доказывает
-exact content каждого из четырёх CLI, runtime provider проверяет manifest SHA, а
-staging очищается trap-ом. Push binary не дублирует source contracts без runtime
-причины: self-contained публикуемым артефактом является CLI, а Push runtime уже
-содержит compiled handlers/descriptors. Workflow `.github/workflows/release-platform-check.yml`
-использует initialized pinned submodule, проверяет финальные архивы на native
-Linux/macOS runners и публикует только проверенные `main`-сборки. Docker/kind gate
-автоматизирован на Linux; полный macOS Docker gate выполняется отдельно перед
-первой публичной публикацией. Ограничения и приёмка: [`release-v1.md`](release-v1.md).
+`api/openapi/push-service.openapi.yaml` и `api/proto/push/v1/push.proto` служат
+относительными символическими ссылками прямо на эти канонические файлы submodule.
+Вторые копии контрактов не хранятся. `api/source.json` фиксирует репозиторий,
+точный commit submodule, gitlink основного репозитория, относительные цели ссылок
+и SHA-256 канонического содержимого. Проверка контрактов также требует точного
+совпадения байтов с закреплённым commit и отклоняет незакоммиченные изменения
+в файлах контрактов.
 
-После canonical contract change обновляются submodule commit, symlink metadata
-и generated bindings одним commit `tripgo-infra`.
+`scripts/sync-contracts sync` атомарно создаёт или исправляет ссылки. `check`
+проверяет тип ссылки, точную цель, наличие канонического файла и метаданные;
+запасные копии не используются. Для сборки и проверок нужен инициализированный
+submodule. Windows не поддерживается v1, а заявленные платформы Darwin/Linux
+поддерживают символические ссылки.
+
+Go `go:embed` не следует символическим ссылкам и запрещает `..`. После проверки
+контрактов релизная сборка атомарно помещает проверенные байты во временный
+каталог `internal/contractasset/generated/` внутри пакета; Git его игнорирует.
+Собранный с нужным tag
+`tripgoctl` напрямую импортирует провайдер и встраивает OpenAPI, proto и манифест
+источника. Кросс-сборка подтверждает точное содержимое каждого из четырёх CLI.
+Во время работы провайдер проверяет SHA манифеста; временный каталог удаляется
+через trap.
+
+Бинарник Push не дублирует исходные контракты без необходимости во время работы:
+он уже содержит скомпилированные обработчики и дескрипторы. Самодостаточный
+публикуемый артефакт здесь CLI. Workflow `.github/workflows/release-platform-check.yml`
+использует инициализированный submodule на закреплённом commit, проверяет
+финальные архивы на нативных Linux/macOS runners и публикует только проверенные
+`main`-сборки. Проверка Docker/kind автоматизирована на Linux; полный macOS-прогон
+с Docker выполняется отдельно перед первой публичной публикацией. Ограничения
+и приёмка: [`release-v1.md`](release-v1.md).
+
+После изменения канонического контракта commit submodule, метаданные ссылок и
+сгенерированные bindings обновляются одним commit `tripgo-infra`.
 
 Канонический Push proto публикует `go_package`
 `github.com/course-go-autumn-2026/homework/gen/push/v1`; инфраструктурные
-bindings по-прежнему генерируются во внутренний package через явный mapping в
-`buf.gen.yaml`.
+bindings по-прежнему генерируются во внутренний пакет через явное соответствие
+в `buf.gen.yaml`.
 
 ## 9. Push image, local registry и releases
 
@@ -247,21 +259,22 @@ kind alias: localhost:5001
 repository: localhost:5001/tripgo-push-service
 ```
 
-`cluster start` создаёт registry container с ownership marker и настраивает kind
-containerd mirror. Каждый release `tripgoctl` содержит runtime Dockerfile и
-готовый `push-service` для `linux/<host arch>`. CLI извлекает private temporary
-build context, выполняет локальный scratch build, пушит image только в managed
-registry, получает digest и передаёт immutable reference генератору. Mutable tag
-не попадает в Kubernetes manifest/lock.
+`cluster start` создаёт контейнер registry с маркером владения и настраивает
+зеркало containerd в kind. Каждый релиз `tripgoctl` содержит Dockerfile для запуска
+и готовый `push-service` для `linux/<host arch>`. CLI извлекает их в закрытый
+временный контекст сборки, локально собирает scratch-образ, отправляет его только
+в управляемый registry, получает digest и передаёт генератору неизменяемую ссылку.
+Изменяемый tag не попадает в Kubernetes manifest/lock.
 
-`cluster stop` удаляет и kind cluster, и принадлежащий CLI registry. Порт 5001
-проверяется вместе с остальными host ports. Remote OCI Push Service не
-публикуется; перед Kubernetes-интеграцией обязательны contract tests embedded
-binary и local build/push/run integration checks на amd64/arm64.
+`cluster stop` удаляет кластер kind и принадлежащий CLI registry. Порт 5001
+проверяется вместе с остальными портами хоста. Образ Push Service не публикуется
+во внешнем OCI registry. Перед Kubernetes-интеграцией обязательны контрактные
+тесты встроенного бинарника и локальные интеграционные проверки сборки, отправки
+и запуска на amd64/arm64.
 
-Этап 12 реализует двухфазный embedding и локальные archives с `SHA256SUMS`.
-CI публикует проверенные архивы и installer в GitHub Releases `main-<полный SHA>`.
-Локальная команда сборки ничего не публикует; готовые версии не перезаписываются.
+Этап 12: двухфазное встраивание файлов и локальные архивы с `SHA256SUMS`. CI публикует проверенные архивы и установщик в GitHub Releases
+`main-<полный SHA>`. Локальная команда сборки ничего не публикует; готовые версии
+не перезаписываются.
 
 ## 10. Бумажная проверка labs 1–5
 
@@ -274,32 +287,35 @@ CI публикует проверенные архивы и installer в GitHub
 | 5 | isolated full stack + resilience env | same components on lab 5 ports | нет |
 
 Для каждой работы CLI генерирует полный накопительный env-набор. Миграции
-остаются в студенческом repository и запускаются с хоста. Endpoints доступны
-после завершения CLI благодаря kind extraPortMappings + NodePort.
+остаются в студенческом репозитории и запускаются с хоста. Адреса доступны после
+завершения CLI благодаря kind extraPortMappings и NodePort.
 
 ## 11. Интеграция с homework
 
 Расхождения, зафиксированные на этапе 0, закрыты этапами 7 и 13:
 
-- student docs и task README используют `tripgoctl`, lab-specific ports и
-  generated `.env` вместо `tripgo-devenv`/`make up`;
-- canonical OpenAPI содержит `400` для невалидного `/admin/behaviour`;
-- canonical Push proto содержит course-owned `go_package`;
-- `api/` сохраняет только проверяемые relative symlink на pinned homework, а
-  release staging остаётся ignored и очищается после embedding.
+- документация для студентов и README заданий используют `tripgoctl`, отдельные
+  порты для каждой работы и сгенерированный `.env` вместо `tripgo-devenv`/`make up`;
+- канонический OpenAPI содержит `400` для некорректного `/admin/behaviour`;
+- канонический Push proto содержит `go_package`, принадлежащий курсу;
+- `api/` сохраняет только проверяемые относительные символические ссылки на
+  закреплённую версию homework; временные файлы релизной сборки игнорируются Git
+  и удаляются после встраивания.
 
 ## 12. Acceptance criteria v1
 
 Приняты 15 общих критериев раздела 10 исходного плана. Дополнительно этап 0
 считается завершённым, когда пользователь утверждает:
 
-1. repository/module/image naming и временный build-only release режим;
-2. CLI commands, human-only output, exit codes и destructive confirmations;
-3. TOML schema и set-equivalence для components;
-4. port formulas/order и loopback binding;
-5. ownership labels/annotations и SSA conflict policy;
-6. submodule contract sync и необходимость upstream OpenAPI change;
-7. lifecycle и `.env` marker policy;
+1. имена репозитория, модуля и образа, временный режим сборки релиза без публикации;
+2. команды CLI, только человекочитаемый вывод, коды завершения и подтверждения
+   удаления ресурсов и данных;
+3. схему TOML и сравнение компонентов как множеств;
+4. формулы и порядок портов, привязку к loopback;
+5. метки и аннотации владения, правила разрешения конфликтов SSA;
+6. синхронизацию контрактов через submodule и необходимость изменения OpenAPI
+   в исходном репозитории;
+7. жизненный цикл и правила работы с маркером `.env`;
 8. список расхождений с homework.
 
 ## 13. Решения итерации gate-ревью
@@ -308,8 +324,8 @@ CI публикует проверенные архивы и installer в GitHub
 
 1. `environment reset` требует интерактивное `yes`, автоматизация использует
    `--yes`;
-2. все host ports публикуются только на `127.0.0.1`;
-3. `components` валидируются как set, порядок не является частью контракта;
+2. все порты хоста публикуются только на `127.0.0.1`;
+3. `components` проверяются как множество; порядок в контракт не входит;
 4. `environment logs <component> --follow` входит в v1.
 
 Открытых архитектурных вопросов этапа 0 нет. Gate этапа 0 утверждён

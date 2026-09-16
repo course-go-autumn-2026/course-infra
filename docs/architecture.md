@@ -21,88 +21,92 @@ cmd/push-service
 - `internal/cli` → `internal/pushservice`;
 - `internal/pushservice` → `internal/cli`.
 
-Ограничение продублировано в `.golangci.yml` через `depguard`. Общий пакет
-`internal/buildinfo` содержит только технические build metadata. Новые shared
-пакеты добавляются только когда у обоих продуктов появляется реальная одинаковая
-потребность; заранее общие abstractions не создаются.
+Запрет проверяется через `depguard` в `.golangci.yml`. Общий пакет
+`internal/buildinfo` содержит только метаданные сборки. Новые общие пакеты
+добавляются, только когда обоим продуктам нужно решить одну и ту же техническую
+задачу; абстракции заранее не создаются.
 
 ## CLI wiring
 
-`cmd/tripgoctl` отвечает только за process boundary: stdout/stderr, cwd provider,
-build metadata, exit. `internal/cli.NewRootCommand` получает эти capabilities
-через `Dependencies`; пакет не вызывает `os.Getwd` и тестируется без изменения
-глобального cwd.
+`cmd/tripgoctl` отвечает за работу с процессом: stdout/stderr, функцию получения
+cwd, метаданные сборки и завершение. `internal/cli.NewRootCommand` получает эти
+зависимости через `Dependencies`; пакет не вызывает `os.Getwd` и тестируется
+без изменения глобального cwd.
 
-Command tree реализован на Cobra v1.10.2. Работают `version`, полный
-`cluster start/status/stop`, lifecycle `environment start/status/stop/reset/list`
-для labs 1–5, component-aware `environment logs` и `connect`. Default completion
-command отключена, потому что она не входит в публичный контракт v1.
+Дерево команд построено на Cobra v1.10.2. Работают `version`, полный набор
+`cluster start/status/stop` и `environment start/status/stop/reset/list` для
+работ 1–5, `environment logs` с выбором компонента и `connect`. Стандартная
+команда автодополнения отключена: она не входит в публичный контракт v1.
 
 ## Configuration boundary и каталог
 
-`internal/environment` — единственная граница декодирования
-`environment.toml`. Parser на `go-toml/v2` запрещает неизвестные поля, затем
-проверяет schema/cross-field constraints и нормализует components в стабильный
-порядок. Ошибки представлены типом `ConfigError` с path, field, expected/actual
-и TOML position, когда она доступна.
+Только `internal/environment` декодирует `environment.toml`. Парсер на
+`go-toml/v2` запрещает неизвестные поля, проверяет схему и ограничения между
+полями, затем приводит компоненты к стабильному порядку. Ошибка `ConfigError`
+содержит путь, поле, ожидаемое и фактическое значения, а также позицию в TOML,
+если она доступна.
 
-`internal/catalog` не читает файлы и не зависит от cwd. Он содержит immutable
-components по labs 1–5, namespace, image manifest digests, port mappings и
-полные накопительные env defaults. Возвращаемые slices копируются. Каталог
-потребляют parser, generator и CLI; обратной зависимости от CLI нет.
-Подробные pins и формулы: [`catalog-v1.md`](catalog-v1.md).
+`internal/catalog` не читает файлы и не зависит от cwd. Он содержит неизменяемые
+компоненты для работ 1–5, namespace, digest манифестов образов, пробросы портов
+и полные накопительные наборы env по умолчанию. Возвращаемые срезы копируются.
+Каталог используют парсер, генератор и CLI; сам каталог от CLI не зависит.
+Закреплённые версии и формулы: [`catalog-v1.md`](catalog-v1.md).
 
-Отдельная команда config validation намеренно не добавляется: lifecycle-команды
-будут вызывать parser до любых мутаций.
+Отдельная команда проверки конфигурации не добавляется: команды жизненного
+цикла будут вызывать парсер до любых изменений.
 
 ## Generator
 
-`internal/generator` зависит от validated `internal/environment`, immutable
-`internal/catalog` и embedded `templates.Files`, но не от Kubernetes client или
-cwd. Результат — ordered in-memory bundle manifests + lock; отдельный writer
-безопасно устанавливает его в `.tripgo`. Таким образом generation/golden tests
-не требуют Docker или cluster.
+`internal/generator` зависит от проверенной конфигурации `internal/environment`,
+неизменяемого `internal/catalog` и встроенных `templates.Files`, но не от клиента
+Kubernetes или cwd. Он возвращает упорядоченный набор манифестов и lock в памяти;
+отдельный модуль безопасно записывает их в `.tripgo`. Тестам генерации и сравнения
+с эталонами не нужны Docker или кластер.
 
-До локального build/push Push image labs 3–5 требуют trusted internal digest
-option из managed registry; пользовательский config не может задавать image.
-Topics представлены desired-state ConfigMap, а не одноразовым Job. Полный контракт:
+Для работ 3–5 нужен digest локально собранного и отправленного в управляемый
+registry образа Push. Он передаётся через доверенную внутреннюю настройку;
+пользователь не может задать образ в конфигурации. Желаемое состояние топиков
+хранится в ConfigMap, а не в одноразовом Job. Полный контракт:
 [`generator-v1.md`](generator-v1.md).
 
 ## Cluster application layer
 
-`internal/cluster` владеет Docker/kind process boundary, verified helper cache,
-kind config, managed local registry, identity marker, state и operation lock.
-CLI зависит от узкого `ClusterLifecycle` interface; unit-тесты command UX не
-запускают Docker. Cluster package не импортирует CLI и возвращает typed
-prerequisite/conflict errors для публичных exit codes 3/4.
+`internal/cluster` управляет процессами Docker/kind, кешем проверенного
+вспомогательного бинарника, конфигурацией kind, локальным registry, маркером
+identity, состоянием и блокировкой операций. CLI зависит от узкого интерфейса
+`ClusterLifecycle`; unit-тесты команд не запускают Docker. Пакет кластера не
+импортирует CLI. Для ошибок предусловий и конфликтов он возвращает отдельные
+типы ошибок с публичными кодами завершения 3/4.
 
-Kind config генерируется программно из port catalog и не зависит от cwd.
-Registry и control-plane имеют один random identity, записанный независимо в
-registry labels, marker внутри kind node и atomic state. Подробности и
-integration evidence: [`cluster-lifecycle-v1.md`](cluster-lifecycle-v1.md).
+Конфигурация kind генерируется из каталога портов и не зависит от cwd.
+Registry и control-plane используют один случайный identity, независимо
+записанный в метках registry, маркере внутри узла kind и атомарно сохраняемом
+состоянии. Подробности и результаты интеграций:
+[`cluster-lifecycle-v1.md`](cluster-lifecycle-v1.md).
 
 ## Push Service wiring
 
-`cmd/push-service` имеет независимый entrypoint и `-version`; application
-boundary находится в `internal/pushservice.App`. Реализованы HTTP push/health и
-admin behaviour API, gRPC Push/health/reflection, общий rate limiter,
-context-aware latency/failures, structured logs и graceful shutdown.
+У `cmd/push-service` отдельная точка входа и `-version`; логика приложения
+находится в `internal/pushservice.App`. Поддерживаются HTTP push/health и
+admin behaviour API, gRPC Push/health/reflection, общий ограничитель частоты
+запросов, задержки и ошибки с учётом context, структурированные логи и корректное
+завершение работы.
 
-Canonical runtime Dockerfile находится в
-`internal/pushartifact/assets/Dockerfile`, использует `scratch` и numeric uid/gid
-`65532:65532`. Двухфазная release-сборка сначала создаёт Linux Push binary для
-amd64/arm64, затем встраивает Dockerfile и architecture-matched ELF в каждый
-Darwin/Linux CLI. `internal/pushimage` проверяет ELF architecture, строит image
-из extracted assets, пушит только в managed
-`localhost:5001/tripgo-push-service` и принимает только immutable RepoDigest.
-Generator получает эту ссылку через trusted options; remote OCI publication
-пути нет.
+Канонический Dockerfile для запуска находится в
+`internal/pushartifact/assets/Dockerfile` и использует `scratch` и числовые uid/gid
+`65532:65532`. Релиз собирается в два этапа: сначала Linux-бинарник Push для
+amd64/arm64, затем Dockerfile и ELF нужной архитектуры встраиваются в каждый
+Darwin/Linux CLI. `internal/pushimage` проверяет архитектуру ELF, собирает образ
+из извлечённых файлов, отправляет его только в управляемый
+`localhost:5001/tripgo-push-service` и принимает только неизменяемый RepoDigest.
+Генератор получает эту ссылку через доверенные настройки. Публикации во внешнем
+OCI registry нет.
 
 ## Embedded assets
 
-`templates.Files` использует `go:embed` для namespace, PostgreSQL,
-observability, Push, Redpanda и topics templates. Golden tests labs 1–5
-проверяют, что assets попадают в бинарник без runtime filesystem dependency.
+`templates.Files` использует `go:embed` для шаблонов namespace, PostgreSQL,
+observability, Push, Redpanda и топиков. Golden-тесты работ 1–5 проверяют, что
+шаблоны попадают в бинарник и не требуют внешних файлов во время работы.
 
 ## Contracts
 
@@ -115,42 +119,47 @@ observability, Push, Redpanda и topics templates. Golden tests labs 1–5
 ./scripts/sync-contracts check
 ```
 
-Relative symlink находятся в `api/` и указывают прямо на canonical файлы
-submodule; fallback copies запрещены. `api/source.json` фиксирует repository,
-submodule commit, точные link targets и SHA-256 canonical content. Check
-проверяет links и metadata без сети. Поэтому submodule обязателен для build;
-Windows, где symlink создаёт дополнительный portability/privilege contract, не
-входит в поддерживаемые v1 платформы. Go embed не следует symlink, поэтому
-release recipes после check staging-ят verified bytes в ignored
-`internal/contractasset/generated`, собирают CLI с tag `embedded_contracts`,
-проверяют exact OpenAPI/proto/manifest во всех четырёх binaries и удаляют staging.
+Относительные символические ссылки в `api/` указывают прямо на канонические
+файлы submodule; запасные копии запрещены. `api/source.json` фиксирует репозиторий,
+commit submodule, точные цели ссылок и SHA-256 содержимого. Проверка ссылок и
+метаданных не требует сети. Submodule обязателен для сборки. Windows не входит
+в список поддерживаемых платформ v1: символические ссылки в ней требуют
+отдельного решения вопросов переносимости и прав доступа.
+
+Go embed не следует символическим ссылкам. После проверки релизная сборка
+помещает проверенные байты в игнорируемый Git каталог
+`internal/contractasset/generated`, собирает CLI с tag `embedded_contracts`,
+проверяет точное содержимое OpenAPI/proto/manifest во всех четырёх бинарниках
+и удаляет временный каталог.
 
 ## Версионирование
 
-Оба бинарника получают одинаковые значения через linker flags:
+Оба бинарника получают одинаковые значения через флаги линковщика:
 
-- release version (`main-<полный SHA>` в CI);
-- source commit;
-- UTC build timestamp.
+- версию релиза (`main-<полный SHA>` в CI);
+- commit исходников;
+- время сборки в UTC.
 
-Имя продукта задаётся entrypoint и различается. Dev defaults:
-`dev/unknown/unknown`. Release-сборка отклоняет defaults и требует полный
-`COMMIT`, равный committed superproject `HEAD`.
+Имя продукта задаётся в точке входа и различается. Значения по умолчанию для
+разработки: `dev/unknown/unknown`. Релизная сборка отклоняет их и требует полный
+`COMMIT`, равный закоммиченному `HEAD` основного репозитория.
 
 ## Автоматизация
 
 `Makefile` содержит локальные команды сборки и проверки:
 
-- `make source-check` — non-destructive source, race, fixture и contract gate;
+- `make source-check` проверяет исходники, гонки, фикстуры и контракты, не меняя
+  состояние Docker/kind;
 - `make lint`, `make cross-build`, `make container-build`;
-- `make verify` — полный локальный gate с linter и Docker container build;
-- destructive `make integration-lifecycle`, `make integration-release-runtime`
-  и `make integration-isolation` для lifecycle, финального runtime и
-  multi-environment isolation.
+- `make verify` выполняет полную локальную проверку с линтером и сборкой Docker-образов;
+- `make integration-lifecycle`, `make integration-release-runtime` и
+  `make integration-isolation` изменяют локальное состояние: проверяют жизненный
+  цикл, работу финального бинарника и изоляцию нескольких окружений.
 
 Workflow `.github/workflows/release-platform-check.yml` проверяет PR и публикует
 проверенные сборки `main` в GitHub Releases. Один комплект архивов проходит
-проверку установки на Linux/macOS amd64/arm64 и Docker/kind gate на Linux обеих
-архитектур, затем публикуется без пересборки. На hosted macOS выполняется только
-smoke-check; полный Docker gate перед первой публикацией требует отдельной машины.
+проверку установки на Linux/macOS amd64/arm64 и Docker/kind на Linux обеих
+архитектур, затем публикуется без пересборки. На hosted macOS проверяются только
+установка и запуск CLI; полный Docker-прогон перед первой публикацией требует
+отдельной машины.
 Подробности и ограничения: [`release-v1.md`](release-v1.md).

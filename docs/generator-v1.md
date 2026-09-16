@@ -1,25 +1,25 @@
 # Детерминированный generator v1
 
-Статус: реализация этапа 3, 2026-09-01.
+Этап 3, 2026-09-01.
 
 ## API и входы
 
 `internal/generator.Generate` принимает только:
 
 1. уже проверенный и нормализованный `environment.Config`;
-2. trusted application options: версия `tripgoctl`, cluster identity и временный
-   Push image reference.
+2. доверенные настройки приложения: версию `tripgoctl`, identity кластера и
+   временную ссылку на образ Push.
 
-Время, случайность, cwd и порядок TOML maps не являются входами. Custom `[env]`
-не входит в manifests и не может утечь туда; она будет использована только
-writer-ом `.env` на этапе 5.
+Время, случайность, cwd и порядок TOML maps не входят в параметры генератора.
+Пользовательская `[env]` не попадает в манифесты: её будет использовать только
+модуль записи `.env` на этапе 5.
 
-Push Service строится локально из embedded Dockerfile + Linux binary и никогда
-не публикуется как remote OCI. Поэтому генерация labs 3–5 возвращает ошибку до
-появления image в managed registry. Golden tests передают через внутренний
-`Options` syntactically valid
-`localhost:5001/tripgo-push-service@sha256:<64 hex>`. Input недоступен из
-`environment.toml`; ссылки на другой repository и mutable tags запрещены.
+Образ Push Service собирается локально из встроенных Dockerfile и Linux-бинарника
+и никогда не публикуется во внешнем OCI registry. Пока образ не появился в
+управляемом registry, генерация для работ 3–5 возвращает ошибку. Golden-тесты передают через
+внутренний `Options` синтаксически корректную ссылку
+`localhost:5001/tripgo-push-service@sha256:<64 hex>`. Передать её через
+`environment.toml` нельзя; ссылки на другой репозиторий и изменяемые tag запрещены.
 
 ## Выход
 
@@ -34,11 +34,12 @@ Push Service строится локально из embedded Dockerfile + Linux 
     topics.yaml         # lab >= 4
 ```
 
-Порядок bundle всегда соответствует списку выше. `Write` создаёт private
-каталоги `0700` и файлы `0600`, атомарно заменяет `.tripgo/rendered`, удаляет
-stale generated manifests и сохраняет неизвестные соседние файлы в `.tripgo`.
-Локальный lock не создаётся: каждый start всегда строит desired manifests
-заново, а ownership и фактическое состояние проверяются по Kubernetes API.
+Порядок файлов всегда соответствует списку выше. `Write` создаёт закрытые
+каталоги с правами `0700` и файлы с правами `0600`, атомарно заменяет
+`.tripgo/rendered`, удаляет устаревшие сгенерированные манифесты и сохраняет
+неизвестные соседние файлы в `.tripgo`. Локальный lock не создаётся: каждый start
+заново строит манифесты требуемого состояния. Принадлежность ресурсов и их
+фактическое состояние проверяются по Kubernetes API.
 
 ## Kubernetes resources
 
@@ -51,19 +52,20 @@ stale generated manifests и сохраняет неизвестные сосе�
 | `redpanda.yaml` | internal/external Services, single-node StatefulSet с PVC, Console Deployment/NodePort Service |
 | `topics.yaml` | desired-state ConfigMap с partition contract `3/3/1` |
 
-Topics ConfigMap монтируется в постоянный owned reconciler Deployment. Он
-идемпотентно создаёт отсутствующие topics, увеличивает недостающее число
-partitions до `3/3/1` и отказывается от разрушающего уменьшения partitions.
-Lifecycle status проверяет exact managed ConfigMap data и script.
+ConfigMap с топиками монтируется в постоянный управляемый Deployment-reconciler.
+Он идемпотентно создаёт отсутствующие топики, увеличивает недостающее число
+партиций до `3/3/1` и отказывается уменьшать его с потерей данных. Проверка
+состояния сверяет точные данные и скрипт управляемого ConfigMap.
 
-Каждый top-level resource имеет полный ownership labels, generator-version и
-cluster-id. Pod templates имеют тот же ownership; selector labels отделены.
-Images указаны только по manifest digest. Workloads имеют resource requests,
-memory limits, probes и restricted security contexts.
+Каждый ресурс верхнего уровня содержит полный набор меток владения,
+generator-version и cluster-id. Шаблоны pod содержат те же метки владения;
+метки селекторов отделены. Образы указаны только по digest манифеста.
+У workloads заданы запросы ресурсов, ограничения памяти, пробы и ограниченные
+security contexts.
 
 ## Golden contract
 
-Golden directories: `tests/golden/lab-{1..5}/.tripgo`. Число ресурсов:
+Эталонные каталоги: `tests/golden/lab-{1..5}/.tripgo`. Число ресурсов:
 
 | Lab | Files | Kubernetes resources |
 |---:|---:|---:|
@@ -75,16 +77,16 @@ Golden directories: `tests/golden/lab-{1..5}/.tripgo`. Число ресурсо
 
 `internal/generator/generator_test.go` проверяет:
 
-- byte-for-byte golden output всех labs;
-- две генерации без diff;
-- синтаксис каждого multi-document YAML;
-- ownership/namespace annotations;
-- отсутствие custom env в manifests;
-- отказ от mutable/отсутствующего либо не-local Push image;
-- repeatable writer, stale cleanup, защиту от symlinked output и сохранение
-  неизвестных файлов в `.tripgo`.
+- побайтовое совпадение результата с эталонами всех работ;
+- совпадение результатов двух генераций;
+- синтаксис каждого YAML с несколькими документами;
+- аннотации владения и namespace;
+- отсутствие пользовательских env в манифестах;
+- отказ от изменяемого, отсутствующего или нелокального образа Push;
+- повторяемость записи, очистку устаревших файлов, запрет символических ссылок
+  в выводе и сохранение неизвестных файлов в `.tripgo`.
 
-Обновление golden является явной операцией:
+Команда для явного обновления эталонов:
 
 ```bash
 UPDATE_GOLDEN=1 go test ./internal/generator
