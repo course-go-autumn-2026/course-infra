@@ -21,10 +21,10 @@ import (
 func main() {
 	endpoint := flag.String("endpoint", "localhost:19095", "Push Service gRPC endpoint")
 	expected := flag.String("expect", "success", "success, unavailable, resource-exhausted, or deadline")
-	timeout := flag.Duration("timeout", 3*time.Second, "RPC timeout")
+	timeout := flag.Duration("timeout", 3*time.Second, "SendPush RPC timeout")
 	flag.Parse()
 	if err := run(*endpoint, *expected, *timeout); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "Push gRPC probe (%s, expect %s, SendPush timeout %s): %v\n", *endpoint, *expected, *timeout, err)
 		os.Exit(1)
 	}
 }
@@ -35,12 +35,12 @@ func run(endpoint, expected string, timeout time.Duration) error {
 		return err
 	}
 	defer func() { _ = connection.Close() }()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if response, err := healthv1.NewHealthClient(connection).Check(ctx, &healthv1.HealthCheckRequest{Service: pushv1.PushService_ServiceDesc.ServiceName}); err != nil || response.GetStatus() != healthv1.HealthCheckResponse_SERVING {
+	setupContext, cancelSetup := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelSetup()
+	if response, err := healthv1.NewHealthClient(connection).Check(setupContext, &healthv1.HealthCheckRequest{Service: pushv1.PushService_ServiceDesc.ServiceName}); err != nil || response.GetStatus() != healthv1.HealthCheckResponse_SERVING {
 		return fmt.Errorf("gRPC health: response=%v error=%w", response, err)
 	}
-	reflectionClient, err := reflectionv1.NewServerReflectionClient(connection).ServerReflectionInfo(ctx)
+	reflectionClient, err := reflectionv1.NewServerReflectionClient(connection).ServerReflectionInfo(setupContext)
 	if err != nil {
 		return fmt.Errorf("gRPC reflection: %w", err)
 	}
@@ -50,6 +50,8 @@ func run(endpoint, expected string, timeout time.Duration) error {
 	if response, err := reflectionClient.Recv(); err != nil || len(response.GetListServicesResponse().GetService()) == 0 {
 		return fmt.Errorf("gRPC reflection response=%v error=%w", response, err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	_, callErr := pushv1.NewPushServiceClient(connection).SendPush(ctx, &pushv1.SendPushRequest{
 		RequestId: "grpc-integration", RecipientId: "8860b315-ec86-42eb-a17c-7c163d721ff5",
 		Kind: pushv1.PushKind_PUSH_KIND_REQUEST_POSITION,
