@@ -1,6 +1,6 @@
 # Cluster lifecycle v1
 
-Статус: реализация этапа 4, 2026-09-01.
+Этап 4, 2026-09-01.
 
 ## Owned topology
 
@@ -18,14 +18,14 @@ Docker
         localhost:5001 → http://tripgo-local-registry:5000
 ```
 
-Registry подключается к Docker network `kind` после создания cluster. Runtime
-integration проверяет, что image, запушенный в `localhost:5001`, успешно
-запускается в pod по локальному digest.
+Registry подключается к Docker-сети `kind` после создания кластера.
+Интеграционная проверка подтверждает, что образ, отправленный в `localhost:5001`,
+успешно запускается в pod по локальному digest.
 
 ## Helper supply chain
 
-`kind` скачивается только с GitHub release v0.27.0 и кешируется после SHA-256
-verification:
+`kind` скачивается только из GitHub release v0.27.0 и попадает в кеш после
+проверки SHA-256:
 
 | Platform | SHA-256 |
 |---|---|
@@ -34,46 +34,50 @@ verification:
 | linux/amd64 | `a6875aaea358acf0ac07786b1a6755d08fd640f4c79b7a2e46681cc13f49a04b` |
 | linux/arm64 | `5e4507a41c69679562610b1be82ba4f80693a7826f4e9c6e39236169a3e4f9d0` |
 
-Повреждённый cache entry удаляется и скачивается заново. Download выполняется во
-временный файл, затем `fsync`, mode `0700` и atomic rename.
+Повреждённый файл в кеше удаляется и скачивается заново. Сначала он загружается
+во временный файл, затем выполняются `fsync`, установка прав `0700` и атомарное
+переименование.
 
 ## Start
 
-`cluster start` под operation lock:
+`cluster start` под блокировкой операции:
 
-1. проверяет platform, Docker CLI/daemon;
-2. получает verified kind;
-3. при существующем cluster сверяет state, kind-config hash, marker и registry
-   labels и возвращает idempotent success;
-4. для нового cluster проверяет сразу registry port + 50 lab ports;
-5. предупреждает при Docker memory < 6 GiB или disk free < 10 GiB;
-6. создаёт registry только по pinned digest;
-7. создаёт kind с pinned node image и ожиданием readiness 120 секунд;
-8. подключает registry к network, записывает node marker, API-visible identity
-   ConfigMap и atomic state.
+1. проверяет платформу, Docker CLI/daemon;
+2. получает проверенный kind;
+3. если кластер уже существует, сверяет состояние, hash конфигурации kind,
+   маркер и метки registry; при совпадении возвращает идемпотентный успех;
+4. для нового кластера сразу проверяет порт registry и 50 портов работ;
+5. предупреждает, если памяти Docker меньше 6 GiB или свободного места меньше 10 GiB;
+6. создаёт registry только по закреплённому digest;
+7. создаёт kind с закреплённым образом узла и ждёт готовности 120 секунд;
+8. подключает registry к сети, записывает маркер узла, доступный через API
+   ConfigMap с identity и атомарно сохраняет состояние.
 
-При ошибке после начала mutation созданные cluster/registry удаляются.
+При ошибке после начала изменений созданные кластер и registry удаляются.
 
 ## Status и stop
 
-State находится в OS user config directory, mode `0600`, и содержит schema,
-cluster identity, версии, SHA-256 kind config и известные namespace. Cluster и
-environment mutations используют один advisory `flock`; environment operation
-удерживает lease до Kubernetes mutation и state commit. Kubernetes client
-получает kubeconfig непосредственно через verified kind, а не из текущего
-пользовательского context, и сверяет API identity ConfigMap.
+Состояние хранится в пользовательском каталоге конфигурации ОС с правами
+`0600`. Оно содержит схему, identity кластера, версии, SHA-256 конфигурации kind
+и известные namespace. Изменения кластера и окружений используют один advisory
+`flock`; операция окружения удерживает блокировку на время изменений Kubernetes
+и сохранения состояния. Клиент Kubernetes получает kubeconfig напрямую через
+проверенный kind, а не из текущего пользовательского context, и сверяет ConfigMap
+с identity через API.
 
-`status` ничего не меняет и требует совпадения node marker, registry labels и
-state. `stop` требует `yes` либо `--yes`, повторно проверяет ownership перед
-удалением и удаляет kind + registry. Отсутствующий cluster — idempotent success;
-foreign/mismatched resources возвращают exit code 4.
+`status` ничего не меняет и требует совпадения маркера узла, меток registry и
+сохранённого состояния. `stop` требует `yes` либо `--yes`, повторно проверяет
+принадлежность ресурсов перед удалением и удаляет kind вместе с registry.
+Отсутствие кластера считается идемпотентным успехом. Для чужих ресурсов или
+несовпадения проверяемых данных возвращается код завершения 4.
 
 ## Проверки итерации
 
-- unit/race: downloader, checksum repair, state, operation lock, config с 50
-  mappings, lifecycle state machine, Docker unavailable, multi-port conflicts;
+- unit/race-тесты: загрузка, восстановление после ошибки checksum, состояние,
+  блокировка операций, конфигурация с 50 пробросами портов, переходы жизненного
+  цикла, недоступный Docker и конфликты нескольких портов;
 - реальное создание, status и повторный start;
-- реальный registry push → kind pull by digest;
-- NodePort integration через по одному mapping каждого lab:
+- отправка образа в registry и скачивание из kind по digest;
+- интеграция NodePort через один проброс портов каждой работы:
   `21081`, `22081`, `23081`, `24081`, `25081`;
-- реальный stop, повторный stop и конфликт `127.0.0.1:5001` с exit code 4.
+- реальный stop, повторный stop и конфликт `127.0.0.1:5001` с кодом завершения 4.

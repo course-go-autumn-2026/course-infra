@@ -1,81 +1,89 @@
 # Environment lifecycle v1: labs 1–5
 
-Реализованы полные lifecycle-сценарии работ 1–5: PostgreSQL, observability,
-локально построенный Push Service и изолированные Redpanda/Console в работах 4–5.
+Поддерживается полный жизненный цикл окружений работ 1–5: PostgreSQL,
+observability, локально собранный Push Service и изолированные Redpanda/Console
+в работах 4–5.
 
 ## Reconciliation
 
 `tripgoctl environment start`:
 
-1. разбирает `<cwd>/environment.toml` и принимает labs 1–5;
-2. до Kubernetes mutations показывает число уже запущенных окружений и bounded
-   Docker-memory warning для тяжёлых labs;
-3. до Kubernetes mutations отклоняет пользовательский `.env` без marker;
-4. получает kubeconfig и API identity только от verified kind-кластера под
-   общим operation lease;
-5. проверяет полное ownership metadata каждого существующего ресурса;
-6. для labs 3–5 извлекает embedded Dockerfile и Linux Push binary архитектуры CLI,
-   строит scratch image, пушит только в managed `localhost:5001` и получает
-   immutable RepoDigest;
-7. передаёт Push digest генератору через trusted internal options и применяет
-   Namespace, конфигурацию, хранилища, Deployments и Services server-side apply
-   manager-ом `tripgoctl`, без force conflicts;
+1. разбирает `<cwd>/environment.toml` и принимает работы 1–5;
+2. до изменений Kubernetes показывает число запущенных окружений и краткое
+   предупреждение о памяти Docker для тяжёлых работ;
+3. до изменений Kubernetes отклоняет пользовательский `.env` без маркера;
+4. получает kubeconfig и API identity только от проверенного kind-кластера под
+   общей блокировкой операции;
+5. проверяет все метаданные владения каждого существующего ресурса;
+6. для работ 3–5 извлекает встроенные Dockerfile и Linux-бинарник Push нужной
+   архитектуры CLI, собирает scratch-образ, отправляет его только в управляемый
+   `localhost:5001` и получает неизменяемый RepoDigest;
+7. передаёт digest Push генератору через доверенные внутренние настройки и
+   применяет Namespace, конфигурацию, хранилища, Deployments и Services через
+   server-side apply с manager `tripgoctl`, без принудительного разрешения конфликтов;
 8. ждёт observed generation и updated/ready/available replicas всех workloads;
-9. синхронизирует known/running state и атомарно обновляет `.tripgo/rendered`;
-   локальный lock не хранится, `.env` устанавливается atomic rename после fsync
-   bytes и затем fsync родительского каталога.
+9. синхронизирует состояния known/running и атомарно обновляет `.tripgo/rendered`;
+   локальный lock не хранится. Для `.env` сначала выполняется fsync содержимого,
+   затем атомарное переименование и fsync родительского каталога.
 
-Lab 1 публикует PostgreSQL. Lab 2 дополнительно публикует OTel HTTP/gRPC,
-Grafana, Jaeger и Prometheus и проверяет namespace-local telemetry Services.
-Grafana доступна без авторизации с локальной ролью Admin; provisioned datasources
-`Prometheus` и `Jaeger` указывают на сервисы того же namespace. Прямая страница
-входа также включена для диагностики, локальные credentials — `admin` / `admin`.
-Lab 3 дополнительно публикует Push HTTP/admin и gRPC на фиксированных host ports
+Работа 1 публикует PostgreSQL. Работа 2 добавляет OTel HTTP/gRPC, Grafana,
+Jaeger и Prometheus и проверяет сервисы телеметрии внутри namespace. Grafana
+доступна без авторизации с локальной ролью Admin; настроенные источники данных
+`Prometheus` и `Jaeger` указывают на сервисы того же namespace. Для диагностики
+также доступна прямая страница входа с локальными учётными данными `admin` / `admin`.
+
+Работа 3 добавляет Push HTTP/admin и gRPC на фиксированных портах хоста
 `23809` и `23905`; Deployment закреплён по
-`localhost:5001/tripgo-push-service@sha256:...`. Labs 4–5 добавляют собственные
-single-node Redpanda StatefulSet с PVC, Console и фиксированные Kafka/Console
-ports. Постоянный Deployment-reconciler читает desired topics ConfigMap,
-создаёт отсутствующие топики, безопасно увеличивает число партиций и отказывается
-от разрушающего уменьшения; точные desired counts — `3/3/1`.
+`localhost:5001/tripgo-push-service@sha256:...`. Работы 4–5 добавляют собственные
+одноузловые Redpanda StatefulSet с PVC, Console и фиксированные порты Kafka/Console.
+Постоянный Deployment-reconciler читает ConfigMap с требуемым состоянием топиков,
+создаёт отсутствующие, безопасно увеличивает число партиций и отказывается
+уменьшать его с потерей данных. Точные требуемые количества: `3/3/1`.
 
 ## Lifecycle semantics
 
-- `environment status` проверяет ownership, точные catalog Services, immutable
-  image digests и generation-aware readiness всех компонентов текущей работы;
-- `environment stop` после ownership preflight масштабирует все Deployments и
-  Redpanda StatefulSet до нуля полным SSA desired state, сохраняя PVC;
-- повторный `environment start` восстанавливает workloads и данные; неизменный
-  Push digest не перезапускает pod и сохраняет его in-memory admin settings;
-- после фактического рестарта Push pod настройки предсказуемо возвращаются к env
-  defaults;
-- `environment reset` требует точное `yes` или `--yes`, удаляет только owned
-  namespace, generated `.env` и `.tripgo/rendered`, сохраняя неизвестные файлы;
-- `environment list` обнаруживает owned namespaces по labels и cluster identity,
-  показывает полный workload-состав и сохраняет повреждённые owned environments
-  в списке со state `degraded`;
-- `environment logs` поддерживает Push Service, Redpanda, Console и topic
-  reconciler, выбирает owned pod в точном namespace; долгий follow не удерживает
-  mutation lease;
-- `connect` проверяет readiness, печатает постоянные endpoints текущей работы и
-  завершается без изменения state или `.env`.
+- `environment status` проверяет принадлежность ресурсов, точное соответствие
+  Services каталогу, неизменяемые digest образов и готовность всех компонентов
+  текущей работы с учётом generation;
+- `environment stop` сначала проверяет принадлежность ресурсов, затем через SSA
+  задаёт полное требуемое состояние с нулём реплик для всех Deployments и
+  Redpanda StatefulSet, сохраняя PVC;
+- повторный `environment start` восстанавливает workloads и данные; если digest
+  Push не изменился, pod не перезапускается и сохраняет настройки admin в памяти;
+- после фактического перезапуска pod Push настройки возвращаются к значениям env
+  по умолчанию;
+- `environment reset` требует точное `yes` или `--yes`, удаляет только принадлежащий
+  CLI namespace, сгенерированный `.env` и `.tripgo/rendered`, сохраняя неизвестные файлы;
+- `environment list` находит принадлежащие CLI namespace по меткам и identity
+  кластера, показывает полный состав workloads. Повреждённые окружения CLI
+  остаются в списке с состоянием `degraded`;
+- `environment logs` поддерживает Push Service, Redpanda, Console и reconciler
+  топиков, выбирает принадлежащий CLI pod в точном namespace; долгий follow не
+  удерживает блокировку изменений;
+- `connect` проверяет готовность, печатает постоянные адреса текущей работы и
+  завершается без изменения состояния или `.env`.
 
 ## Safety boundaries
 
-Lifecycle не использует текущий kube context, не принимает image override из
-`environment.toml`, не публикует Push Service во внешний registry, не форсирует
-SSA conflicts и не удаляет чужие ресурсы. Missing prerequisites используют exit code `3`, ownership/SSA/user-file
-conflicts — exit code `4`.
+Команды жизненного цикла не используют текущий kube context, не принимают
+переопределение образа из `environment.toml`, не публикуют Push Service во внешнем
+registry, не разрешают конфликты SSA принудительно и не удаляют чужие ресурсы.
+При невыполненных предусловиях возвращается код `3`; при конфликтах владения,
+SSA или пользовательских файлов возвращается код `4`.
 
 ## Reproducible checks
 
-Destructive integration gates требуют отсутствующего `tripgo-local` перед запуском:
+Интеграции изменяют локальное состояние. Перед запуском `tripgo-local` должен
+отсутствовать:
 
-- `make integration-lifecycle` — lab 1 PostgreSQL lifecycle, migrations, user
-  file protection и SSA conflict;
-- `make integration-release-runtime` — release-like embedded build/push/pull by
-  digest, Push HTTP/gRPC/admin/logs, pod restart и lab 3 stop/start/reset;
-- `make integration-isolation` — bounded simultaneous labs 2/4/5, exact
-  host↔kind↔NodePort↔env mappings, broken-pipeline recovery, independent
-  PostgreSQL/Push/Redpanda/groups, exact topic reconciliation and reset,
-  positive/negative telemetry markers, stable read-only `connect` and endpoint
-  recovery after pod replacement.
+- `make integration-lifecycle` проверяет жизненный цикл PostgreSQL в работе 1,
+  миграции, защиту пользовательских файлов и конфликт SSA;
+- `make integration-release-runtime` проверяет сборку со встроенными файлами,
+  как в релизе, отправку и скачивание образа по digest, Push HTTP/gRPC/admin/logs,
+  перезапуск pod и stop/start/reset работы 3;
+- `make integration-isolation` проверяет ограниченный одновременный запуск работ
+  2/4/5, точные соответствия host↔kind↔NodePort↔env, восстановление после сбоя
+  цепочки операций, независимость PostgreSQL/Push/Redpanda/groups, точное
+  согласование и сброс топиков, наличие нужных и отсутствие чужих маркеров
+  телеметрии, стабильный вывод `connect` без изменения состояния и восстановление
+  адресов после замены pod.

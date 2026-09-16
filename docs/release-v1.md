@@ -2,7 +2,7 @@
 
 `make release` builds locally and never publishes. The GitHub Actions workflow
 `.github/workflows/release-platform-check.yml` publishes verified `main` builds
-as GitHub Releases. Push Service OCI images still have no remote publication path.
+as GitHub Releases. Push Service OCI images are not published remotely.
 
 ## Reproducible build
 
@@ -74,11 +74,11 @@ uploads all assets, then publishes and marks it `latest`. Nothing is rebuilt.
 These are ordinary releases, not GitHub prereleases: `/releases/latest` does not
 select prereleases. There is no separate stable channel yet.
 
-An already published version is left unchanged. A failed upload leaves an
-unpublished draft, not a partial `latest`. If a draft remains, inspect its assets
-and target commit, delete only that incomplete draft in GitHub, and rerun the
-workflow. The script intentionally refuses to overwrite existing drafts or
-published assets. Enable GitHub release immutability to enforce this server-side.
+Published versions are left unchanged. If an upload fails, the release stays
+a draft and `latest` does not change. Inspect the remaining draft's assets and
+target commit, delete only that incomplete draft in GitHub, and rerun the
+workflow. The script refuses to overwrite existing drafts or published assets.
+Enable GitHub release immutability to protect published releases on the server.
 
 Actions artifacts are for CI/debugging, not anonymous installation: they expire
 and require GitHub authentication. Public Release assets provide the download URLs
@@ -86,7 +86,7 @@ used by students. Pinned release tags allow repeatable installs and rollback.
 
 ## Installation
 
-After the repository is public and its first release is published:
+Install from the public release:
 
 ```sh
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
@@ -95,7 +95,8 @@ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
 tripgoctl version
 ```
 
-Alternatively, download and inspect the script before invoking `sh`; see README.
+To download and inspect the script before running `sh`, follow the
+[installation instructions](README.md#установка-cli).
 The POSIX installer supports macOS/Linux amd64/arm64, needs `curl`, `tar`, and
 `sha256sum` or `shasum`, and defaults to `latest`. It resolves `latest` once to a
 concrete tag, validates that tag, and uses version-pinned HTTPS URLs for both the
@@ -127,8 +128,9 @@ source checkout and installs it locally. It does not download a release.
 `make release-platform-check` selects the archive matching the native host,
 extracts it, and runs lab 3 through the real CLI: owned registry, local Push image
 build/push, immutable RepoDigest, Kubernetes pull, and HTTP/gRPC behavior.
-Preflight refuses an existing fixed-name cluster or registry. Cleanup uses the
-CLI identity gate and removes only Push references absent from its baseline.
+The preflight check stops if a cluster or registry with the reserved name already
+exists. Cleanup checks the CLI identity and removes only Push references that
+were absent from the preflight inventory.
 
 CI runs this full gate on **Linux amd64/arm64**. On macOS amd64/arm64 it checks
 installation and CLI execution only. Hosted macOS arm64 runners do not support
@@ -136,7 +138,7 @@ nested virtualization, so the previous Colima-based four-platform Docker gate
 is not used. Before the first public release, run the full gate on real Macs
 with Docker on both supported architectures. Continuous macOS Docker coverage
 would require suitable separate runners; it is not claimed by this workflow.
-A workflow definition is not evidence that its native checks have passed.
+Defining these jobs does not prove they passed; check their run results.
 
 ## First public release checklist
 
@@ -154,8 +156,8 @@ A workflow definition is not evidence that its native checks have passed.
 6. From a clean machine, test anonymous latest and pinned installs, `version`,
    `doctor`, and the lab runtime. Docker must be running for infrastructure use.
 
-Repository visibility, protection rules, license selection, and the first remote
-publication are maintainer actions, not side effects of local build commands.
+Maintainers control repository visibility, protection rules, license selection,
+and the first remote publication. Local build commands do not change them.
 
 ## Cleanup and dependency updates
 
