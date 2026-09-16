@@ -75,7 +75,7 @@ def release_notes(version: str, commit: str, built_at: str) -> bytes:
     lines = [
         f"# tripgoctl {version} release inventory",
         "",
-        "Local build output only. No CLI archive or Push Service OCI image is published by this pipeline.",
+        "Self-contained CLI archives. CI publishes verified main builds to GitHub Releases; no remote Push Service OCI image is published.",
         "",
         f"- Build commit: `{commit}`",
         f"- Reproducible build timestamp: `{built_at}`",
@@ -118,12 +118,13 @@ def create_archive(path: Path, binary: bytes, notes: bytes, epoch: int) -> None:
             with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
                 add_bytes(archive, "tripgoctl", binary, 0o755, epoch)
                 add_bytes(archive, "RELEASE_NOTES.md", notes, 0o644, epoch)
+                add_bytes(archive, "LICENSE", (ROOT / "LICENSE").read_bytes(), 0o644, epoch)
 
 
 def audit_archive(path: Path, expected_binary: bytes, expected_notes: bytes) -> None:
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
-        if [member.name for member in members] != ["tripgoctl", "RELEASE_NOTES.md"]:
+        if [member.name for member in members] != ["tripgoctl", "RELEASE_NOTES.md", "LICENSE"]:
             raise ValueError(f"{path.name}: unexpected archive inventory")
         if stat.S_IMODE(members[0].mode) != 0o755 or not members[0].isfile():
             raise ValueError(f"{path.name}: tripgoctl is not a regular executable")
@@ -131,6 +132,8 @@ def audit_archive(path: Path, expected_binary: bytes, expected_notes: bytes) -> 
             raise ValueError(f"{path.name}: archived CLI differs from verified final binary")
         if archive.extractfile(members[1]).read() != expected_notes:  # type: ignore[union-attr]
             raise ValueError(f"{path.name}: release notes differ")
+        if archive.extractfile(members[2]).read() != (ROOT / "LICENSE").read_bytes():  # type: ignore[union-attr]
+            raise ValueError(f"{path.name}: license differs")
 
 
 def main() -> int:

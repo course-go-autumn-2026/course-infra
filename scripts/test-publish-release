@@ -1,0 +1,82 @@
+#!/bin/sh
+# No remote changes: gh is mocked; archives and the git checkout are temporary.
+set -eu
+source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-publish-test.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+root=$tmp/repo
+mkdir -p "$root/scripts" "$root/build/release" "$tmp/tools"
+cp "$source_root/scripts/publish-release" "$root/scripts/"
+git init -q "$root"
+git -C "$root" -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m fixture
+commit=$(git -C "$root" rev-parse HEAD)
+version=main-$commit
+for os in darwin linux; do
+    for arch in amd64 arm64; do
+        printf 'fixture archive\n' > "$root/build/release/tripgoctl_${version}_${os}_${arch}.tar.gz"
+    done
+done
+(
+    cd "$root/build/release"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum ./*.tar.gz > SHA256SUMS
+    else
+        shasum -a 256 ./*.tar.gz > SHA256SUMS
+    fi
+)
+cat > "$tmp/tools/gh" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$FIXTURE_CALLS"
+case "$1 $2" in
+    'api repos/example/course-infra/commits/main') printf '%s\n' "$FIXTURE_HEAD" ;;
+    'release view')
+        [ "$FIXTURE_RELEASE" != missing ] || exit 1
+        printf '%s\n' "$FIXTURE_RELEASE"
+        ;;
+    'release create')
+        [ "$#" -eq 18 ]
+        case "$*" in *"--target $FIXTURE_HEAD --draft --latest=false"*) ;; *) exit 9 ;; esac
+        [ "${FIXTURE_FAIL_UPLOAD:-0}" = 0 ] || exit 7
+        ;;
+    'release edit')
+        case "$*" in *'--draft=false --latest') ;; *) exit 9 ;; esac
+        ;;
+    *) echo "unexpected gh call: $*" >&2; exit 9 ;;
+esac
+EOF
+chmod +x "$tmp/tools/gh" "$root/scripts/publish-release"
+export PATH="$tmp/tools:$PATH" GH_REPO=example/course-infra
+export FIXTURE_CALLS="$tmp/calls" FIXTURE_HEAD="$commit" FIXTURE_RELEASE=missing
+
+"$root/scripts/publish-release" >/dev/null
+grep -F "release create $version --target $commit --draft --latest=false" "$FIXTURE_CALLS" >/dev/null
+test "$(tail -n 1 "$FIXTURE_CALLS")" = "release edit $version --draft=false --latest"
+
+for state in stale published draft upload checksum; do
+    : > "$FIXTURE_CALLS"
+    case "$state" in
+        stale) FIXTURE_HEAD=old "$root/scripts/publish-release" >/dev/null ;;
+        published) FIXTURE_RELEASE=false "$root/scripts/publish-release" >/dev/null ;;
+        draft)
+            if FIXTURE_RELEASE=true "$root/scripts/publish-release" >/dev/null 2>&1; then
+                echo 'publisher accepted an existing draft' >&2; exit 1
+            fi ;;
+        upload)
+            if FIXTURE_FAIL_UPLOAD=1 "$root/scripts/publish-release" >/dev/null 2>&1; then
+                echo 'publisher accepted a failed upload' >&2; exit 1
+            fi ;;
+        checksum)
+            printf 'corrupted\n' >> "$root/build/release/tripgoctl_${version}_linux_amd64.tar.gz"
+            if "$root/scripts/publish-release" >/dev/null 2>&1; then
+                echo 'publisher accepted a corrupted archive' >&2; exit 1
+            fi ;;
+    esac
+    if grep '^release edit ' "$FIXTURE_CALLS" >/dev/null; then
+        echo "publisher changed latest for $state" >&2; exit 1
+    fi
+    if [ "$state" != upload ] && grep '^release create ' "$FIXTURE_CALLS" >/dev/null; then
+        echo "publisher created a release for $state" >&2; exit 1
+    fi
+done
+echo 'Release publication fixtures passed (draft-first, stale run, existing release, failed upload, and checksum failure)'

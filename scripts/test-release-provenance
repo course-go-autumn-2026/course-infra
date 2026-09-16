@@ -11,9 +11,9 @@ init_homework() {
 	git init -q "$repo"
 	git -C "$repo" config user.name test
 	git -C "$repo" config user.email test@example.invalid
-	mkdir -p "$repo/contracts/openapi" "$repo/contracts/proto/push/v1"
-	printf 'openapi-v1\n' >"$repo/contracts/openapi/push-service.openapi.yaml"
-	printf 'proto-v1\n' >"$repo/contracts/proto/push/v1/push.proto"
+	mkdir -p "$repo/homework/contracts/openapi" "$repo/homework/contracts/proto/push/v1"
+	printf 'openapi-v1\n' >"$repo/homework/contracts/openapi/push-service.openapi.yaml"
+	printf 'proto-v1\n' >"$repo/homework/contracts/proto/push/v1/push.proto"
 	git -C "$repo" add .
 	git -C "$repo" commit -qm homework-v1
 }
@@ -30,8 +30,8 @@ init_superproject() {
 	cp "$source_root/scripts/build-release" "$root/scripts/build-release"
 	chmod +x "$root/scripts/sync-contracts" "$root/scripts/build-release"
 	cp -R "$homework" "$root/third_party/homework"
-	ln -s ../../third_party/homework/contracts/openapi/push-service.openapi.yaml "$root/api/openapi/push-service.openapi.yaml"
-	ln -s ../../../../third_party/homework/contracts/proto/push/v1/push.proto "$root/api/proto/push/v1/push.proto"
+	ln -s ../../third_party/homework/homework/contracts/openapi/push-service.openapi.yaml "$root/api/openapi/push-service.openapi.yaml"
+	ln -s ../../../../third_party/homework/homework/contracts/proto/push/v1/push.proto "$root/api/proto/push/v1/push.proto"
 	git -c advice.addEmbeddedRepo=false -C "$root" add .
 }
 
@@ -62,7 +62,7 @@ fi
 grep 'release requires a clean superproject index and worktree' "$tmp/source-dirty.out" >/dev/null
 git -C "$root" checkout -q -- tracked.go
 
-printf 'proto-v2\n' >"$root/third_party/homework/contracts/proto/push/v1/push.proto"
+printf 'proto-v2\n' >"$root/third_party/homework/homework/contracts/proto/push/v1/push.proto"
 git -C "$root/third_party/homework" add .
 git -C "$root/third_party/homework" commit -qm homework-v2
 git -C "$root" add third_party/homework
@@ -81,7 +81,7 @@ grep 'homework checkout HEAD.*differs from pinned gitlink' "$tmp/checkout.out" >
 
 pinned=$(git -C "$root" ls-tree HEAD -- third_party/homework | awk '{print $3}')
 git -C "$root/third_party/homework" checkout -q "$pinned"
-printf 'dirty\n' >>"$root/third_party/homework/contracts/openapi/push-service.openapi.yaml"
+printf 'dirty\n' >>"$root/third_party/homework/homework/contracts/openapi/push-service.openapi.yaml"
 if "$root/scripts/sync-contracts" release-check >"$tmp/dirty.out" 2>&1; then
 	echo 'release-check accepted dirty canonical contract bytes' >&2
 	exit 1

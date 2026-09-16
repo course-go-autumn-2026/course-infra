@@ -152,6 +152,7 @@ fixture-tests:
 	./scripts/test-release-provenance
 	./scripts/test-release-failure-cleanup
 	./scripts/test-install-tripgoctl
+	./scripts/test-publish-release
 
 installer-test:
 	./scripts/test-install-tripgoctl

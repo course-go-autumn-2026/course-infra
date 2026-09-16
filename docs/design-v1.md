@@ -7,7 +7,8 @@
 
 ## 1. Scope и границы артефактов
 
-Canonical repository/module:
+Repository: `https://github.com/course-go-autumn-2026/course-infra`.
+Go module сохраняет прежнее имя для совместимости внутренних imports:
 
 ```text
 github.com/course-go-autumn-2026/tripgo-infra
@@ -24,8 +25,8 @@ tripgoctl
 
 На этапе 1 локальный `make verify` отдельно собирает и тестирует оба бинарника.
 На этапе 3 принято новое packaging-решение: remote OCI Push Service не
-публикуется. CI надо повторно согласовать до первого общего remote branch/review
-процесса; self-contained CLI releases — на этапе 12.
+публикуется. Self-contained CLI releases собираются локально и публикуются из
+проверенных `main`-сборок CI; текущий процесс описан в [`release-v1.md`](release-v1.md).
 
 Границы пакетов:
 
@@ -195,14 +196,14 @@ ownership остаётся источником истины при восста
 Канонический источник подключён как git submodule:
 
 ```text
-third_party/homework -> git@github.com:course-go-autumn-2026/homework.git
+third_party/homework -> https://github.com/course-go-autumn-2026/course.git
 ```
 
 Используемые файлы:
 
 ```text
-contracts/openapi/push-service.openapi.yaml
-contracts/proto/push/v1/push.proto
+homework/contracts/openapi/push-service.openapi.yaml
+homework/contracts/proto/push/v1/push.proto
 ```
 
 `api/openapi/push-service.openapi.yaml` и `api/proto/push/v1/push.proto` —
@@ -222,10 +223,11 @@ provider и встраивает OpenAPI, proto и source manifest; cross-build 
 exact content каждого из четырёх CLI, runtime provider проверяет manifest SHA, а
 staging очищается trap-ом. Push binary не дублирует source contracts без runtime
 причины: self-contained публикуемым артефактом является CLI, а Push runtime уже
-содержит compiled handlers/descriptors. Workflow `.github/workflows/release-platform-check.yml` существует, но ещё не
-запускался и сам по себе не доказывает native execution. Его checkout обязан
-использовать initialized pinned submodule и не обращаться к плавающей ветке;
-native Linux и чистая внешняя машина остаются непроверенными release gates.
+содержит compiled handlers/descriptors. Workflow `.github/workflows/release-platform-check.yml`
+использует initialized pinned submodule, проверяет финальные архивы на native
+Linux/macOS runners и публикует только проверенные `main`-сборки. Docker/kind gate
+автоматизирован на Linux; полный macOS Docker gate выполняется отдельно перед
+первой публичной публикацией. Ограничения и приёмка: [`release-v1.md`](release-v1.md).
 
 После canonical contract change обновляются submodule commit, symlink metadata
 и generated bindings одним commit `tripgo-infra`.
@@ -258,7 +260,8 @@ registry, получает digest и передаёт immutable reference ген
 binary и local build/push/run integration checks на amd64/arm64.
 
 Этап 12 реализует двухфазный embedding и локальные archives с `SHA256SUMS`.
-GitHub Release и любая иная публикация не выполняются без отдельного решения.
+CI публикует проверенные архивы и installer в GitHub Releases `main-<полный SHA>`.
+Локальная команда сборки ничего не публикует; готовые версии не перезаписываются.
 
 ## 10. Бумажная проверка labs 1–5
 

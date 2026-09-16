@@ -106,8 +106,9 @@ observability, Push, Redpanda и topics templates. Golden tests labs 1–5
 
 ## Contracts
 
-`third_party/homework` — git submodule. `scripts/sync-contracts` поддерживает два
-режима:
+`third_party/homework` — закреплённый git submodule публичного
+`https://github.com/course-go-autumn-2026/course.git`; контракты находятся в
+`homework/contracts/`. `scripts/sync-contracts` поддерживает development-режимы:
 
 ```bash
 ./scripts/sync-contracts sync
@@ -128,7 +129,7 @@ release recipes после check staging-ят verified bytes в ignored
 
 Оба бинарника получают одинаковые значения через linker flags:
 
-- semantic version;
+- release version (`main-<полный SHA>` в CI);
 - source commit;
 - UTC build timestamp.
 
@@ -138,7 +139,7 @@ release recipes после check staging-ят verified bytes в ignored
 
 ## Автоматизация
 
-`Makefile` является единственной automation boundary текущей итерации:
+`Makefile` содержит локальные команды сборки и проверки:
 
 - `make source-check` — non-destructive source, race, fixture и contract gate;
 - `make lint`, `make cross-build`, `make container-build`;
@@ -147,7 +148,9 @@ release recipes после check staging-ят verified bytes в ignored
   и `make integration-isolation` для lifecycle, финального runtime и
   multi-environment isolation.
 
-Linux/Darwin workflow определён в `.github/workflows/release-platform-check.yml`,
-но в текущем непрокоммиченном состоянии он ещё не запускался и не является
-свидетельством прохождения CI. `make verify` остаётся локальным gate; native
-Linux и чистая внешняя машина остаются обязательными внешними release gates.
+Workflow `.github/workflows/release-platform-check.yml` проверяет PR и публикует
+проверенные сборки `main` в GitHub Releases. Один комплект архивов проходит
+проверку установки на Linux/macOS amd64/arm64 и Docker/kind gate на Linux обеих
+архитектур, затем публикуется без пересборки. На hosted macOS выполняется только
+smoke-check; полный Docker gate перед первой публикацией требует отдельной машины.
+Подробности и ограничения: [`release-v1.md`](release-v1.md).

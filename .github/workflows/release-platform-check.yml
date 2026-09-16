@@ -1,105 +1,145 @@
-name: native four-platform release check (no publish)
+name: tripgoctl release
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
-    paths:
-      - '**.go'
-      - 'api/**'
-      - 'internal/pushartifact/**'
-      - 'scripts/**'
-      - 'Makefile'
-      - '.github/workflows/release-platform-check.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Never interrupt a main publication halfway through uploading its assets.
 concurrency:
-  group: release-check-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  native-linux:
-    name: linux/${{ matrix.arch }}
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      commit: ${{ steps.metadata.outputs.commit }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+      - name: Source checks
+        run: |
+          make proto-tools-install
+          make source-check
+      - name: Release metadata
+        id: metadata
+        run: |
+          commit=$(git rev-parse HEAD)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=main-$commit" >> "$GITHUB_OUTPUT"
+      - name: Build reproducible four-platform archives
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+        run: make release-repro-check SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tripgoctl-release
+          path: build/release/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+          compression-level: 0
+
+  native:
+    name: ${{ matrix.os }}/${{ matrix.arch }}
+    needs: build
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - os: linux
+            arch: amd64
             runner: ubuntu-24.04
-          - arch: arm64
+          - os: linux
+            arch: arm64
             runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: amd64
+            runner: macos-15-intel
+          - os: darwin
+            arch: arm64
+            runner: macos-15
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: false
+          ref: ${{ needs.build.outputs.commit }}
+          submodules: recursive
           persist-credentials: false
-      - name: Initialize canonical contract checkout read-only
-        run: |
-          git config --global url.https://github.com/course-go-autumn-2026/homework.git.insteadOf git@github.com:course-go-autumn-2026/homework.git
-          git submodule update --init --recursive --depth 1
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        if: matrix.os == 'linux'
         with:
           go-version: '1.24.x'
           cache: true
-      - name: Install runtime-check prerequisites
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
-      - name: Build deterministic local-only release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tripgoctl-release
+          path: build/release
+      - name: Install and smoke-test the native archive
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
+          EXPECTED_PLATFORM: ${{ matrix.os }}/${{ matrix.arch }}
         run: |
-          make proto-tools-install
-          make release VERSION=ci COMMIT="$(git rev-parse HEAD)" SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-      - name: Validate final archive through Docker and managed registry
+          case "$EXPECTED_PLATFORM:$(uname -s):$(uname -m)" in
+            linux/amd64:Linux:x86_64|linux/arm64:Linux:aarch64|darwin/amd64:Darwin:x86_64|darwin/arm64:Darwin:arm64) ;;
+            *) echo "runner does not match $EXPECTED_PLATFORM" >&2; exit 1 ;;
+          esac
+          make installer-test
+          TRIPGOCTL_RELEASE_DIR="$PWD/build/release" \
+            ./scripts/install-tripgoctl --install-dir "$RUNNER_TEMP/tripgoctl-bin" "$VERSION"
+          cli="$RUNNER_TEMP/tripgoctl-bin/tripgoctl"
+          case "$("$cli" version)" in
+            "tripgoctl $VERSION (commit $COMMIT, built "*) ;;
+            *) echo "unexpected build metadata" >&2; exit 1 ;;
+          esac
+          "$cli" --help
+      - name: Install Linux runtime-check prerequisites
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+      - name: Validate the same archive through Docker and kind
+        if: matrix.os == 'linux'
         run: make release-platform-check
       - name: Safe runtime cleanup
-        if: always()
+        if: always() && matrix.os == 'linux'
         run: ./scripts/cleanup-release-check
 
-  native-darwin:
-    name: darwin/${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: macos-15-intel
-          - arch: arm64
-            runner: macos-15
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
+  publish:
+    needs: [build, native]
+    if: >-
+      github.repository == 'course-go-autumn-2026/course-infra' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          submodules: false
+          ref: ${{ needs.build.outputs.commit }}
           persist-credentials: false
-      - name: Initialize canonical contract checkout read-only
-        run: |
-          git config --global url.https://github.com/course-go-autumn-2026/homework.git.insteadOf git@github.com:course-go-autumn-2026/homework.git
-          git submodule update --init --recursive --depth 1
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          go-version: '1.24.x'
-          cache: true
-      - name: Install and start native Docker engine
-        run: |
-          brew install colima docker jq
-          colima start --cpu 4 --memory 10 --disk 40
-          docker version
-      - name: Confirm native runner architecture
-        run: |
-          case "${{ matrix.arch }}:$(uname -m)" in
-            amd64:x86_64|arm64:arm64) ;;
-            *) echo "runner architecture does not match matrix" >&2; exit 1 ;;
-          esac
-      - name: Build deterministic local-only release
-        run: |
-          make proto-tools-install
-          make release VERSION=ci COMMIT="$(git rev-parse HEAD)" SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-      - name: Validate final archive through Docker and managed registry
-        run: make release-platform-check
-      - name: Safe runtime cleanup
-        if: always()
-        run: |
-          ./scripts/cleanup-release-check
-          colima delete --force >/dev/null 2>&1 || true
+          name: tripgoctl-release
+          path: build/release
+      - name: Publish verified assets without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/publish-release

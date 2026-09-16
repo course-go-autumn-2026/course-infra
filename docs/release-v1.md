@@ -1,88 +1,177 @@
-# Local release pipeline v1
+# Release pipeline v1
 
-The stage 12 pipeline creates self-contained `tripgoctl` archives locally. It does not create a Git tag, commit, remote OCI image, release, attestation, or upload.
+`make release` builds locally and never publishes. The GitHub Actions workflow
+`.github/workflows/release-platform-check.yml` publishes verified `main` builds
+as GitHub Releases. Push Service OCI images still have no remote publication path.
 
 ## Reproducible build
 
-Start from a clean checkout with the pinned homework submodule and protobuf tools:
+Start from a clean checkout with the pinned public
+[`course`](https://github.com/course-go-autumn-2026/course) submodule and protobuf tools:
 
 ```bash
 make clean
 make proto-tools-install
-# Full gate: performs two release builds and compares their output.
-make release-repro-check VERSION=v1.0.0 \
+make release-repro-check VERSION="main-$(git rev-parse HEAD)" \
   COMMIT="$(git rev-parse HEAD)" \
   SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 ```
 
-`release` requires an existing superproject `HEAD`, requires `COMMIT` to equal
-its full object ID, requires the complete superproject index and worktree to be
-clean, and resolves `third_party/homework` from that committed tree. A merely
-staged gitlink advance, any tracked or untracked source change, an
-index/checkout mismatch, or an unborn superproject is rejected. The separate development `contract-check` may be used
-while bootstrapping an unborn checkout, but it is not a release provenance gate.
+`release` requires a committed superproject `HEAD`, `COMMIT` equal to its full
+object ID, a clean index and worktree, and `third_party/homework` pinned in that
+committed tree. A staged-only gitlink advance, checkout/index mismatch, dirty
+source, or unborn checkout is rejected. Development `contract-check` permits
+staged updates; it is not the release provenance gate.
 
 `release` performs, in order:
 
-1. exact relative-symlink, clean committed contract bytes, HEAD-pinned homework
-   gitlink equal to the index and checkout, and SHA contract gate;
+1. exact relative-symlink, committed contract bytes, HEAD/index/checkout gitlink,
+   and SHA verification;
 2. clean protobuf regeneration comparison;
-3. package-local ignored staging of verified canonical OpenAPI/proto/manifest bytes;
-4. tagged embedded-contract tests;
+3. ignored staging of verified canonical OpenAPI/proto/manifest bytes;
+4. embedded-contract tests;
 5. static `linux/amd64` and `linux/arm64` Push Service builds;
 6. architecture-matched Push staging and four final CLI builds;
-7. exact byte inclusion checks against every final CLI;
-8. deterministic archive creation, executable-mode and member audit, and `SHA256SUMS`;
-9. deletion of raw intermediates and both ignored staging directories; any failed
-   build or post-build cleanup/archive audit removes the entire release directory.
+7. exact embedded-byte inclusion checks against every final CLI;
+8. deterministic archives, executable-mode/member audit, and `SHA256SUMS`;
+9. deletion of intermediates and staging; failed builds or audits remove the
+   entire release directory.
 
-The only retained files are four `tar.gz` archives, `SHA256SUMS`, and `RELEASE_NOTES.md`. Each archive contains exactly `tripgoctl` and `RELEASE_NOTES.md`; source, tests, integration scripts, rootfs, contracts as separate files, and build staging are excluded. The CLI itself directly embeds the verified canonical contract bytes because `go:embed` cannot follow the canonical symlinks.
+Only four `tar.gz` archives, `SHA256SUMS`, and `RELEASE_NOTES.md` remain in
+`build/release`. Archives contain exactly `tripgoctl`, `RELEASE_NOTES.md`, and
+`LICENSE` (MIT). The build and cleanup audits verify the archived license bytes.
+The CLI embeds verified contracts because `go:embed` cannot follow symlinks.
+`release-repro-check` rebuilds twice with the same toolchain and inputs, then
+compares checksums and notes. CI currently uses the latest Go 1.24 patch.
 
-After a separately approved GitHub Release publication, install the matching archive with:
+## CI and publication
 
-```bash
-./scripts/install-tripgoctl v1.0.0
+The workflow runs on every PR, push to `main`, and manual dispatch:
+
+1. `make source-check` (format, vet, race tests, script fixtures, contracts,
+   generated protobuf, and staging cleanup).
+2. Build the four-platform release twice on Linux and verify reproducibility.
+   Version is `main-<full HEAD SHA>`; build time is the source commit timestamp.
+3. Upload `build/release` as the `tripgoctl-release` Actions artifact, retained
+   for 14 days. No source tree, submodule, or tool cache is uploaded.
+4. Download those exact archives on native Linux/macOS amd64/arm64 runners.
+   Run installer fixtures, install the matching archive, check build metadata
+   and `--help`. Linux additionally runs the full Docker/kind runtime gate.
+5. Only after all checks pass, `scripts/publish-release` publishes from trusted
+   `course-go-autumn-2026/course-infra` `main` push/manual runs. PRs and forks
+   never publish, and no job uses `pull_request_target`.
+
+Only the publication job has `contents: write`. It uses `GITHUB_TOKEN`, not a
+personal token. Checkout does not persist credentials; actions are pinned to
+commit SHAs. Main runs are serialized without cancellation during publication.
+The publisher skips a commit that is no longer `main` HEAD, so rerunning an old
+workflow cannot move `latest` backwards.
+
+Release assets are the four tested archives, `SHA256SUMS`, `RELEASE_NOTES.md`,
+and `scripts/install-tripgoctl` from the same checked-out commit. The publisher
+rechecks archive checksums, creates a **draft** with an explicit target commit,
+uploads all assets, then publishes and marks it `latest`. Nothing is rebuilt.
+These are ordinary releases, not GitHub prereleases: `/releases/latest` does not
+select prereleases. There is no separate stable channel yet.
+
+An already published version is left unchanged. A failed upload leaves an
+unpublished draft, not a partial `latest`. If a draft remains, inspect its assets
+and target commit, delete only that incomplete draft in GitHub, and rerun the
+workflow. The script intentionally refuses to overwrite existing drafts or
+published assets. Enable GitHub release immutability to enforce this server-side.
+
+Actions artifacts are for CI/debugging, not anonymous installation: they expire
+and require GitHub authentication. Public Release assets provide the download URLs
+used by students. Pinned release tags allow repeatable installs and rollback.
+
+## Installation
+
+After the repository is public and its first release is published:
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+  https://github.com/course-go-autumn-2026/course-infra/releases/latest/download/install-tripgoctl \
+  | sh
+tripgoctl version
 ```
 
-For an archive already present locally, set
-`TRIPGOCTL_RELEASE_DIR=build/release`. This POSIX script can be distributed and
-run directly without Make.
+Alternatively, download and inspect the script before invoking `sh`; see README.
+The POSIX installer supports macOS/Linux amd64/arm64, needs `curl`, `tar`, and
+`sha256sum` or `shasum`, and defaults to `latest`. It resolves `latest` once to a
+concrete tag, validates that tag, and uses version-pinned HTTPS URLs for both the
+archive and checksum. An explicit version skips discovery. The installer is a
+complete function followed by its invocation, so a truncated function received
+via a pipe does not start installing.
 
-In a source checkout, `make install` has different semantics: it builds a full
-self-contained CLI from the current sources and installs that newly built
-binary. Use `INSTALL_DIR="$HOME/.local/bin"` to override its destination.
-
-The POSIX release installer supports macOS/Linux on `amd64`/`arm64`, downloads both the
-archive and `SHA256SUMS` over HTTPS, and verifies the exact archive entry before
-installation. Set `TRIPGOCTL_RELEASE_DIR=build/release` to install from local
-release output without network access. The default destination is writable
-`/usr/local/bin`, otherwise `$HOME/.local/bin`; `--install-dir` overrides it.
-The script never invokes `sudo` or edits shell profiles.
-
-SBOM and provenance are deferred until a pinned generator can produce output without wall-clock time, host paths, or environment-dependent metadata.
-
-## Native four-platform Docker gate
-
-`make release-platform-check` selects the final archive matching the native Darwin/Linux amd64/arm64 host. It extracts that archive and runs the lab 3 runtime integration through the real CLI, including its owned registry, local Push image build/push, immutable RepoDigest, Kubernetes pull, and HTTP/gRPC behavior. A non-destructive preflight refuses to run when the fixed-name cluster or registry already exists. Cleanup uses the CLI identity gate and removes only Push image references absent from the preflight inventory, preserving developer-owned state. The four native jobs in `.github/workflows/release-platform-check.yml` are defined for both architectures on Linux and Darwin without publishing artifacts. They have not run from the current repository state: the definition is not execution evidence. Native Linux and a clean external machine therefore remain unverified release gates.
-
-The release build separately proves exact architecture-matched Push ELF, Dockerfile, and canonical contract inclusion in every final CLI before archiving, then proves each archive contains that exact verified CLI. Native jobs ensure that this byte-level gate is complemented by actual execution on all four supported CLI platforms.
-
-## Cleanup audit
-
-After a local Docker integration, run:
+For local build output, specify its exact version without network access:
 
 ```bash
-make release-audit
+TRIPGOCTL_RELEASE_DIR=build/release \
+  ./scripts/install-tripgoctl "main-$(git rev-parse HEAD)"
 ```
 
-The audit rejects package-local staging, project `.env`/non-golden `.tripgo`, temporary editor files, unexpected release files, archive members, checksum drift, and remaining `tripgo-local*` containers. `make clean` removes all generated build and staging output.
+Both `TRIPGOCTL_RELEASE_DIR` and a custom `TRIPGOCTL_BASE_URL` require an explicit
+version. `TRIPGOCTL_REPOSITORY` overrides the default GitHub repository.
+Destination is writable `/usr/local/bin`, otherwise `$HOME/.local/bin`;
+`--install-dir` or `TRIPGOCTL_INSTALL_DIR` overrides it. No `sudo` or shell-profile
+changes are made. Installation uses a temporary file in the destination directory
+and atomic rename; download or checksum failures preserve the existing binary.
+SHA-256 ensures archive integrity, not authenticity if GitHub or the installer
+itself is compromised. No independent signing/attestation scheme is provided.
 
-## Updating pinned dependencies
+`make install` is different: it builds a full self-contained CLI from the current
+source checkout and installs it locally. It does not download a release.
 
-1. Update one kind, Kubernetes/node, or catalog OCI pin at a time.
-2. Verify the artifact digest for both `linux/amd64` and `linux/arm64`; never replace a digest with a mutable tag.
-3. Update tests and the relevant catalog/design document.
-4. Run `make verify`, the integration gate affected by the component, `make release-repro-check`, and the native Linux release platform check on both architectures.
-5. Review generated `RELEASE_NOTES.md` inventory before any separately approved publication process.
+## Runtime coverage
 
-Canonical Push contracts are updated only by advancing `third_party/homework`, then running `make contract-sync` and protobuf generation. `api/openapi/push-service.openapi.yaml` and `api/proto/push/v1/push.proto` must remain relative symlinks; tracked fallback copies are forbidden.
+`make release-platform-check` selects the archive matching the native host,
+extracts it, and runs lab 3 through the real CLI: owned registry, local Push image
+build/push, immutable RepoDigest, Kubernetes pull, and HTTP/gRPC behavior.
+Preflight refuses an existing fixed-name cluster or registry. Cleanup uses the
+CLI identity gate and removes only Push references absent from its baseline.
+
+CI runs this full gate on **Linux amd64/arm64**. On macOS amd64/arm64 it checks
+installation and CLI execution only. Hosted macOS arm64 runners do not support
+nested virtualization, so the previous Colima-based four-platform Docker gate
+is not used. Before the first public release, run the full gate on real Macs
+with Docker on both supported architectures. Continuous macOS Docker coverage
+would require suitable separate runners; it is not claimed by this workflow.
+A workflow definition is not evidence that its native checks have passed.
+
+## First public release checklist
+
+1. Review all Git refs/history and existing Actions logs for secrets and internal
+   material. Revoke any exposed credentials before changing visibility.
+2. Preserve the project's MIT `LICENSE` in source and binary distributions;
+   external contracts and dependencies retain their own licensing terms.
+   The public course submodule does not expose `course-internal`.
+3. Protect `main` with required review/checks, restrict release-tag changes, and
+   enable release immutability. Keep publication write permissions scoped to its job.
+4. Complete the macOS Docker acceptance above. Commit the gitlink, symlinks,
+   metadata, and workflow changes together; never bypass the clean-release gate.
+5. Make `course-infra` public, then merge to `main` or manually dispatch the
+   workflow from `main`. Check the native jobs and all seven Release assets.
+6. From a clean machine, test anonymous latest and pinned installs, `version`,
+   `doctor`, and the lab runtime. Docker must be running for infrastructure use.
+
+Repository visibility, protection rules, license selection, and the first remote
+publication are maintainer actions, not side effects of local build commands.
+
+## Cleanup and dependency updates
+
+`make release-audit` rejects staging, project `.env`/non-golden `.tripgo`, temporary
+editor files, unexpected release files/members, checksum drift, and remaining
+`tripgo-local*` containers. `make clean` removes all generated build/staging output.
+
+Update one kind, Kubernetes/node, or catalog OCI pin at a time. Verify both Linux
+architectures, update the affected tests/docs, run `make verify`, the relevant
+integration, reproducibility, and native Linux runtime gates. Review the generated
+release inventory before merging.
+
+Canonical contracts are under `homework/contracts/` in the pinned public `course`
+submodule at `third_party/homework`. Advance its gitlink, run `make contract-sync`,
+regenerate protobuf, and commit together. `api/openapi/push-service.openapi.yaml`
+and `api/proto/push/v1/push.proto` must remain relative symlinks, not fallback copies.
+
+SBOM and build attestations remain deferred until a pinned deterministic generator
+is selected. This change adds binary distribution, not another packaging system.
