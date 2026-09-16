@@ -52,12 +52,14 @@ def main() -> int:
             fail(f"checksum mismatch: {archive_path.name}")
         with tarfile.open(archive_path, "r:gz") as archive:
             members = archive.getmembers()
-            if [item.name for item in members] != ["tripgoctl", "RELEASE_NOTES.md"]:
+            if [item.name for item in members] != ["tripgoctl", "RELEASE_NOTES.md", "LICENSE"]:
                 fail(f"archive includes development-only files: {archive_path.name}")
             if members[0].mode & 0o777 != 0o755:
                 fail(f"CLI executable mode is wrong: {archive_path.name}")
             if archive.extractfile(members[1]).read() != notes:  # type: ignore[union-attr]
                 fail(f"release notes mismatch: {archive_path.name}")
+            if archive.extractfile(members[2]).read() != (ROOT / "LICENSE").read_bytes():  # type: ignore[union-attr]
+                fail(f"license mismatch: {archive_path.name}")
     for development_output in (
         ROOT / "build" / "bin",
         ROOT / "build" / "cross",

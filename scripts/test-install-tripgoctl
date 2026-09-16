@@ -51,4 +51,103 @@ if find "$install_dir" -name '.tripgoctl.new.*' -print | grep -q .; then
     exit 1
 fi
 
-echo "tripgoctl installer fixture passed"
+# Exercise HTTPS selection without a real release or network access.
+printf '%s  %s\n' "$digest" "$archive" > "$release/SHA256SUMS"
+mkdir -p "$tmp/tools"
+cat > "$tmp/tools/curl" <<'EOF'
+#!/bin/sh
+set -eu
+url='' output=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o|--output) output=$2; shift 2 ;;
+        https://*) url=$1; shift ;;
+        *) shift ;;
+    esac
+done
+printf '%s\n' "$url" >> "$FIXTURE_REQUESTS"
+base=https://github.com/course-go-autumn-2026/course-infra/releases
+case "$url" in
+    "$base/latest")
+        [ "${FIXTURE_FAILURE:-}" != latest ] || exit 22
+        printf '%s' "${FIXTURE_REDIRECT:-$base/tag/v1.2.3}"
+        ;;
+    "$base/download/v1.2.3/SHA256SUMS")
+        [ "${FIXTURE_FAILURE:-}" != manifest ] || exit 22
+        cp "$FIXTURE_RELEASE/SHA256SUMS" "$output"
+        ;;
+    "$base/download/v1.2.3/"*.tar.gz)
+        [ "${FIXTURE_FAILURE:-}" != archive ] || exit 22
+        cp "$FIXTURE_RELEASE/${url##*/}" "$output"
+        ;;
+    *) echo "unexpected download: $url" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$tmp/tools/curl"
+export PATH="$tmp/tools:$install_dir:$PATH"
+export FIXTURE_RELEASE="$release" FIXTURE_REQUESTS="$tmp/requests"
+export TRIPGOCTL_RELEASE_DIR='' TRIPGOCTL_INSTALL_DIR="$install_dir"
+unset TRIPGOCTL_BASE_URL TRIPGOCTL_REPOSITORY
+
+# No argument, explicit latest, pinned version, and repeat installation via sh stdin.
+for selection in '' latest "$version"; do
+    : > "$FIXTURE_REQUESTS"
+    if [ -z "$selection" ]; then
+        sh -s < "$root/scripts/install-tripgoctl"
+    else
+        sh -s -- "$selection" < "$root/scripts/install-tripgoctl"
+    fi
+    [ "$("$install_dir/tripgoctl")" = fixture-tripgoctl ]
+    if [ "$selection" = "$version" ]; then
+        [ "$(wc -l < "$FIXTURE_REQUESTS" | tr -d ' ')" = 2 ]
+    else
+        [ "$(grep -c '/releases/latest$' "$FIXTURE_REQUESTS")" = 1 ]
+        [ "$(wc -l < "$FIXTURE_REQUESTS" | tr -d ' ')" = 3 ]
+    fi
+done
+
+printf 'do-not-replace\n' > "$install_dir/tripgoctl"
+: > "$FIXTURE_REQUESTS"
+if awk '/^tar -xzf/ { exit } { print }' "$root/scripts/install-tripgoctl" | sh >/dev/null 2>&1; then
+    echo "installer accepted a truncated script" >&2; exit 1
+fi
+[ ! -s "$FIXTURE_REQUESTS" ]
+[ "$(cat "$install_dir/tripgoctl")" = do-not-replace ]
+for failure in latest archive manifest; do
+    if FIXTURE_FAILURE="$failure" sh "$root/scripts/install-tripgoctl" >/dev/null 2>&1; then
+        echo "installer accepted a failed $failure download" >&2; exit 1
+    fi
+    [ "$(cat "$install_dir/tripgoctl")" = do-not-replace ]
+done
+for redirect in 'https://example.invalid/tag/v1.2.3' \
+    'https://github.com/course-go-autumn-2026/course-infra/releases/tag/../bad' \
+    'https://github.com/course-go-autumn-2026/course-infra/releases/tag/latest'; do
+    if FIXTURE_REDIRECT="$redirect" sh "$root/scripts/install-tripgoctl" >/dev/null 2>&1; then
+        echo "installer accepted an invalid latest redirect" >&2; exit 1
+    fi
+done
+if TRIPGOCTL_RELEASE_DIR="$release" sh "$root/scripts/install-tripgoctl" >/dev/null 2>&1; then
+    echo "local install accepted an unspecified version" >&2; exit 1
+fi
+if TRIPGOCTL_BASE_URL=http://example.invalid sh "$root/scripts/install-tripgoctl" "$version" >/dev/null 2>&1; then
+    echo "installer accepted an insecure download URL" >&2; exit 1
+fi
+if sh "$root/scripts/install-tripgoctl" "$(printf 'v1\n../bad')" >/dev/null 2>&1; then
+    echo "installer accepted a multiline version" >&2; exit 1
+fi
+# A missing/duplicate checksum entry must never replace an existing installation.
+for entries in 0 2; do
+    : > "$release/SHA256SUMS"
+    if [ "$entries" = 2 ]; then
+        printf '%s  %s\n%s  %s\n' "$digest" "$archive" "$digest" "$archive" > "$release/SHA256SUMS"
+    fi
+    if sh "$root/scripts/install-tripgoctl" "$version" >/dev/null 2>&1; then
+        echo "installer accepted $entries checksum entries" >&2; exit 1
+    fi
+done
+[ "$(cat "$install_dir/tripgoctl")" = do-not-replace ]
+if find "$install_dir" -name '.tripgoctl.new.*' -print | grep -q .; then
+    echo "failed network install left a temporary destination file" >&2; exit 1
+fi
+
+echo "tripgoctl installer fixtures passed (local, latest, pinned, repeat, and failure preservation)"

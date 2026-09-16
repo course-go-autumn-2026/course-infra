@@ -1,0 +1,47 @@
+#!/bin/sh
+# Called only after the workflow's source, reproducibility, and native checks pass.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+: "${GH_REPO:?GH_REPO is required}"
+commit=$(git rev-parse HEAD)
+version="main-$commit"
+
+# A queued run or a rerun of an older commit must never move latest backwards.
+head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+if [ "$head" != "$commit" ]; then
+    echo "Skipping publication: $commit is no longer main HEAD"
+    exit 0
+fi
+if draft=$(gh release view "$version" --json isDraft --jq .isDraft 2>/dev/null); then
+    if [ "$draft" = false ]; then
+        echo "Release $version is already published; leaving it unchanged"
+        exit 0
+    fi
+    echo "Draft $version already exists; inspect and delete the incomplete draft before retrying" >&2
+    exit 1
+fi
+
+(
+    cd build/release
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum --check --strict SHA256SUMS
+    else
+        shasum -a 256 --check SHA256SUMS
+    fi
+)
+# Explicit inventory: do not upload source trees, build tools, or private files.
+set --
+for os in darwin linux; do
+    for arch in amd64 arm64; do
+        archive="build/release/tripgoctl_${version}_${os}_${arch}.tar.gz"
+        test -f "$archive"
+        set -- "$@" "$archive"
+    done
+done
+gh release create "$version" --target "$commit" --draft --latest=false \
+    --title "tripgoctl $version" --notes-file build/release/RELEASE_NOTES.md \
+    "$@" build/release/SHA256SUMS build/release/RELEASE_NOTES.md scripts/install-tripgoctl
+# Failed uploads leave a draft, never a partially published latest release.
+gh release edit "$version" --draft=false --latest

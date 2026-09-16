@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-repository="${TRIPGOCTL_REPOSITORY:-course-go-autumn-2026/tripgo-infra}"
+# Parse the complete function before doing any work when invoked through curl | sh.
+main() {
+repository="${TRIPGOCTL_REPOSITORY:-course-go-autumn-2026/course-infra}"
 base_url="${TRIPGOCTL_BASE_URL:-https://github.com/${repository}/releases/download}"
 release_dir="${TRIPGOCTL_RELEASE_DIR:-}"
 install_dir="${TRIPGOCTL_INSTALL_DIR:-}"
@@ -9,17 +11,19 @@ version=""
 
 usage() {
     cat <<'EOF'
-Usage: install-tripgoctl [--install-dir DIR] VERSION
+Usage: install-tripgoctl [--install-dir DIR] [VERSION]
 
 Install a verified tripgoctl release on macOS or Linux (amd64/arm64).
+VERSION defaults to latest (the newest successfully published main build).
 
 Environment:
   TRIPGOCTL_INSTALL_DIR   Installation directory (overrides the default)
-  TRIPGOCTL_RELEASE_DIR   Read archives and SHA256SUMS from a local directory
-  TRIPGOCTL_BASE_URL      Release download base URL
+  TRIPGOCTL_RELEASE_DIR   Local archive directory (requires an explicit VERSION)
+  TRIPGOCTL_BASE_URL      Download base URL (requires an explicit VERSION)
   TRIPGOCTL_REPOSITORY    GitHub owner/repository used by the default URL
 
 Examples:
+  ./scripts/install-tripgoctl
   ./scripts/install-tripgoctl v1.0.0
   ./scripts/install-tripgoctl --install-dir "$HOME/.local/bin" v1.0.0
   TRIPGOCTL_RELEASE_DIR=build/release ./scripts/install-tripgoctl v1.0.0
@@ -55,11 +59,39 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ "$#" -eq 0 ] || { echo "unexpected argument: $1" >&2; exit 2; }
-[ -n "$version" ] || { usage >&2; exit 2; }
-printf '%s' "$version" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z._+-]*$' || {
-    echo "invalid VERSION: $version" >&2
-    exit 2
-}
+version=${version:-latest}
+if [ -z "$release_dir" ]; then
+    case "$base_url" in
+        https://*) ;;
+        *) echo "TRIPGOCTL_BASE_URL must use https://" >&2; exit 1 ;;
+    esac
+    command -v curl >/dev/null 2>&1 || {
+        echo "curl is required to download tripgoctl" >&2
+        exit 1
+    }
+fi
+if [ "$version" = latest ]; then
+    if [ -n "$release_dir" ] || [ -n "${TRIPGOCTL_BASE_URL:-}" ]; then
+        echo "an explicit VERSION is required with TRIPGOCTL_RELEASE_DIR or TRIPGOCTL_BASE_URL" >&2
+        exit 2
+    fi
+    # Resolve once: a concurrent release must not mix an archive with another manifest.
+    resolved=$(curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --output /dev/null --write-out '%{url_effective}' \
+        "https://github.com/${repository}/releases/latest")
+    tag_url="https://github.com/${repository}/releases/tag/"
+    case "$resolved" in
+        "$tag_url"*) version=${resolved#"$tag_url"} ;;
+        *) echo "could not resolve latest release: $resolved" >&2; exit 1 ;;
+    esac
+    [ "$version" != latest ] || { echo "latest did not resolve to a release tag" >&2; exit 1; }
+fi
+case "$version" in
+    ''|[!0-9A-Za-z]*|*[!0-9A-Za-z._+-]*)
+        echo "invalid VERSION: $version" >&2
+        exit 2
+        ;;
+esac
 
 case "$(uname -s)" in
     Darwin) os=darwin ;;
@@ -95,17 +127,9 @@ if [ -n "$release_dir" ]; then
     cp "$release_dir/$archive" "$tmp/$archive"
     cp "$release_dir/SHA256SUMS" "$tmp/SHA256SUMS"
 else
-    case "$base_url" in
-        https://*) ;;
-        *) echo "TRIPGOCTL_BASE_URL must use https://" >&2; exit 1 ;;
-    esac
-    command -v curl >/dev/null 2>&1 || {
-        echo "curl is required to download tripgoctl" >&2
-        exit 1
-    }
-    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 \
         "$base_url/$version/$archive" -o "$tmp/$archive"
-    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 \
         "$base_url/$version/SHA256SUMS" -o "$tmp/SHA256SUMS"
 fi
 
@@ -156,3 +180,6 @@ case ":${PATH:-}:" in
         echo "  export PATH=\"$install_dir:\$PATH\"" >&2
         ;;
 esac
+}
+
+main "$@"

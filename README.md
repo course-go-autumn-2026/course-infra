@@ -1,4 +1,4 @@
-# tripgo-infra
+# course-infra
 
 Локальная инфраструктура лабораторных работ TripGo.
 
@@ -21,16 +21,16 @@ canonical OpenAPI/proto и их SHA manifest встраиваются из verif
 - [Детерминированный generator v1](docs/generator-v1.md)
 - [Cluster lifecycle v1](docs/cluster-lifecycle-v1.md)
 - [Environment lifecycle v1: labs 1–5](docs/environment-lifecycle-v1.md)
-- [Local release pipeline v1](docs/release-v1.md)
+- [Release pipeline v1](docs/release-v1.md)
 - [Схема `environment.toml`](schemas/environment-v1.schema.json)
 
-Канонические контракты курса подключены как обязательный git submodule в
-[`third_party/homework`](third_party/homework); файлы в `api/` являются relative
-symlink на canonical source, а не копиями. Поддерживаемые Darwin/Linux platforms
-сохраняют links; Windows не входит в v1.
+Канонические контракты из публичного [course](https://github.com/course-go-autumn-2026/course)
+подключены как закреплённый git submodule в [`third_party/homework`](third_party/homework).
+Файлы в `api/` — relative symlink на его `homework/contracts/`, а не копии.
+Поддерживаемые Darwin/Linux platforms сохраняют links; Windows не входит в v1.
 
 ```bash
-git clone --recurse-submodules git@github.com:course-go-autumn-2026/tripgo-infra.git
+git clone --recurse-submodules https://github.com/course-go-autumn-2026/course-infra.git
 ```
 
 ## Поддерживаемые платформы и требования
@@ -87,21 +87,61 @@ make integration-isolation       # parallel labs 2/4/5 и isolation/recovery
 
 ## Release
 
-Release-пайплайн локальный и ничего не публикует. Он требует clean committed
-checkout, pinned submodule и полный commit hash. Воспроизводимость проверяется
-двумя последовательными сборками:
+На `push` в `main` GitHub Actions запускает проверки, собирает четыре архива
+и после native-проверок публикует GitHub Release `main-<полный commit SHA>`.
+`latest` — последняя опубликованная сборка `main`, не отдельный стабильный канал.
+PR проходят те же проверки без публикации; CI-артефакты хранятся 14 дней.
+
+Локальная команда ничего не публикует. Она требует clean committed checkout,
+pinned submodule и полный commit hash. Воспроизводимость проверяется двумя сборками:
 
 ```bash
 make release-repro-check VERSION=v1.0.0 COMMIT="$(git rev-parse HEAD)" \
   SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 ```
 
-После сборки финальный native archive проверяется через Docker/kind командой
-`make release-platform-check`. В CI этот gate выполняется отдельно на macOS и
-Linux для `amd64`/`arm64`; публикация артефактов workflow не производится.
-Подробности и cleanup-процедура описаны в [release-документе](docs/release-v1.md).
+CI проверяет установку и запуск того же архива на macOS/Linux `amd64`/`arm64`,
+а на Linux дополнительно выполняет Docker/kind gate `make release-platform-check`.
+Полную Docker-проверку macOS нужно выполнить на машине с Docker перед первым
+публичным релизом: hosted macOS arm64 runner не поддерживает nested virtualization.
+Публикуются проверенные архивы без пересборки. Подробности, порядок первого запуска
+и cleanup-процедура описаны в [release-документе](docs/release-v1.md).
 
 ## Установка CLI
+
+После открытия репозитория и первой успешной публикации:
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+  https://github.com/course-go-autumn-2026/course-infra/releases/latest/download/install-tripgoctl \
+  | sh
+tripgoctl version
+tripgoctl doctor
+```
+
+Установка не требует Go, Git или GitHub-токена. Нужны `curl`, `tar` и
+`sha256sum` либо `shasum`; для работы инфраструктуры — запущенный Docker.
+Установщик один раз определяет tag `latest`, затем скачивает архив и его checksum
+из одной версии. Он не вызывает `sudo` и не изменяет shell profiles.
+По умолчанию выбирается доступный для записи `/usr/local/bin`, иначе `$HOME/.local/bin`.
+Если каталог отсутствует в `PATH`, установщик печатает команду для его добавления.
+
+Можно сначала скачать и прочитать скрипт, а затем запустить:
+
+```sh
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+  https://github.com/course-go-autumn-2026/course-infra/releases/latest/download/install-tripgoctl \
+  -o install-tripgoctl
+less install-tripgoctl
+sh install-tripgoctl --install-dir "$HOME/.local/bin"
+```
+
+Для закрепления версии или отката передайте нужный tag из GitHub Releases
+последним аргументом. Повторный запуск обновляет CLI; ошибка скачивания или
+checksum не заменяет установленный бинарник. SHA-256 проверяет целостность архива,
+но не защищает от компрометации самого репозитория или скрипта.
+
+### Сборка из исходников
 
 `make install` собирает из текущего checkout полноценный self-contained CLI со
 встроенными Push Service и контрактами, затем устанавливает его локально:
@@ -121,13 +161,6 @@ make install INSTALL_DIR="$HOME/.local/bin" VERSION=dev
 Команда не использует `sudo` и не изменяет shell profiles. Если выбранного
 каталога нет в `PATH`, она печатает точную команду `export PATH=...`.
 
-Для установки уже опубликованного release без сборки используется отдельный
-проверяющий checksum скрипт:
-
-```bash
-./scripts/install-tripgoctl v1.0.0
-```
-
 Локальная облегчённая development-сборка CLI без release payload:
 
 ```bash
@@ -135,3 +168,8 @@ make build-tripgoctl
 ./build/bin/tripgoctl --help
 ./build/bin/tripgoctl version
 ```
+
+## Лицензия
+
+[MIT](LICENSE). Файл лицензии также включён в release-архивы.
+Внешние зависимости сохраняют собственные условия лицензирования.
