@@ -1,47 +1,88 @@
-#!/bin/sh
-# Called only after the workflow's source, reproducibility, and native checks pass.
-set -eu
+#!/usr/bin/env python3
+"""Publish verified tag archives without rebuilding or moving latest backwards."""
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-cd "$root"
-: "${GH_REPO:?GH_REPO is required}"
-commit=$(git rev-parse HEAD)
-version="main-$commit"
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-# A queued run or a rerun of an older commit must never move latest backwards.
-head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
-if [ "$head" != "$commit" ]; then
-    echo "Skipping publication: $commit is no longer main HEAD"
-    exit 0
-fi
-if draft=$(gh release view "$version" --json isDraft --jq .isDraft 2>/dev/null); then
-    if [ "$draft" = false ]; then
-        echo "Release $version is already published; leaving it unchanged"
-        exit 0
-    fi
-    echo "Draft $version already exists; inspect and delete the incomplete draft before retrying" >&2
-    exit 1
-fi
+ROOT = Path(__file__).resolve().parent.parent
+STABLE_VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
-(
-    cd build/release
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum --check --strict SHA256SUMS
-    else
-        shasum -a 256 --check SHA256SUMS
-    fi
-)
-# Explicit inventory: do not upload source trees, build tools, or private files.
-set --
-for os in darwin linux; do
-    for arch in amd64 arm64; do
-        archive="build/release/tripgoctl_${version}_${os}_${arch}.tar.gz"
-        test -f "$archive"
-        set -- "$@" "$archive"
-    done
-done
-gh release create "$version" --target "$commit" --draft --latest=false \
-    --title "tripgoctl $version" --notes-file build/release/RELEASE_NOTES.md \
-    "$@" build/release/SHA256SUMS build/release/RELEASE_NOTES.md scripts/install-tripgoctl
-# Failed uploads leave a draft, never a partially published latest release.
-gh release edit "$version" --draft=false --latest
+
+def api(path, *options):
+    return json.loads(subprocess.check_output(["gh", "api", path, *options], cwd=ROOT, text=True))
+
+
+def verify_tag(repo, version, commit):
+    target = api(f"repos/{repo}/git/ref/tags/{version}")["object"]
+    while target["type"] == "tag":
+        target = api(f"repos/{repo}/git/tags/{target['sha']}")["object"]
+    if target["type"] != "commit" or target["sha"] != commit:
+        raise ValueError(f"remote tag {version} does not point to verified commit {commit}")
+
+
+def main():
+    repo = os.environ["GH_REPO"]
+    version = os.environ["VERSION"]
+    match = STABLE_VERSION.fullmatch(version)
+    if not match:
+        raise ValueError("VERSION must have the form vX.Y.Z without leading zeroes")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if os.environ["COMMIT"] != commit:
+        raise ValueError("COMMIT must equal the checked-out verified commit")
+    verify_tag(repo, version, commit)
+
+    pages = api(f"repos/{repo}/releases?per_page=100", "--paginate", "--slurp")
+    releases = [release for page in pages for release in page]
+    for release in releases:
+        if release["tag_name"] == version:
+            if release["draft"]:
+                raise ValueError(f"draft {version} already exists; inspect and delete the incomplete draft before retrying")
+            print(f"Release {version} is already published; leaving it unchanged")
+            return
+
+    current = tuple(map(int, match.groups()))
+    latest = True
+    for release in releases:
+        previous = STABLE_VERSION.fullmatch(release["tag_name"])
+        if previous and not release["draft"] and not release["prerelease"]:
+            latest = latest and current > tuple(map(int, previous.groups()))
+
+    directory = ROOT / "build" / "release"
+    # Explicit inventory: never upload source trees, tools, or private files.
+    assets = [f"build/release/tripgoctl_{version}_{os_name}_{arch}.tar.gz"
+              for os_name in ("darwin", "linux") for arch in ("amd64", "arm64")]
+    assets += ["build/release/SHA256SUMS", "build/release/RELEASE_NOTES.md", "scripts/install-tripgoctl"]
+    for asset in assets:
+        if not (ROOT / asset).is_file():
+            raise ValueError(f"release asset is absent: {asset}")
+    entries = [line.split() for line in (directory / "SHA256SUMS").read_text().splitlines()]
+    expected = {Path(asset).name for asset in assets[:4]}
+    if len(entries) != 4 or any(len(entry) != 2 for entry in entries) or {entry[1] for entry in entries} != expected:
+        raise ValueError("SHA256SUMS must cover exactly the four release archives")
+    checksum = ["sha256sum", "--check", "--strict"] if shutil.which("sha256sum") else ["shasum", "-a", "256", "--check"]
+    subprocess.run([*checksum, "SHA256SUMS"], cwd=directory, check=True)
+
+    # Failed uploads leave a draft, never a partially published latest release.
+    subprocess.run([
+        "gh", "release", "create", version, "--verify-tag", "--target", commit,
+        "--draft", "--latest=false", "--title", f"tripgoctl {version}",
+        "--notes-file", "build/release/RELEASE_NOTES.md", *assets,
+    ], cwd=ROOT, check=True)
+    verify_tag(repo, version, commit)
+    subprocess.run([
+        "gh", "release", "edit", version, "--draft=false", f"--latest={str(latest).lower()}",
+    ], cwd=ROOT, check=True)
+    print(f"Published {version} (latest={str(latest).lower()})")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (KeyError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"release publication failed: {error}", file=sys.stderr)
+        sys.exit(1)

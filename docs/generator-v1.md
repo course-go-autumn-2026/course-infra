@@ -47,7 +47,7 @@
 |---|---|
 | `namespace.yaml` | Namespace |
 | `postgres.yaml` | Secret с локальными course credentials, PVC 1 GiB, Deployment, NodePort Service |
-| `observability.yaml` | configs, OTel Collector, Jaeger, Prometheus и Grafana; два PVC; host NodePorts для OTLP/UI |
+| `observability.yaml` | configs, OTel Collector, Jaeger, Prometheus, Grafana и Loki; три PVC; host NodePorts для OTLP/UI, Loki только ClusterIP |
 | `push.yaml` | Push Deployment и двухпортовый NodePort Service |
 | `redpanda.yaml` | internal/external Services, single-node StatefulSet с PVC, Console Deployment/NodePort Service |
 | `topics.yaml` | desired-state ConfigMap с partition contract `3/3/1` |
@@ -63,6 +63,12 @@ generator-version и cluster-id. Шаблоны pod содержат те же �
 У workloads заданы запросы ресурсов, ограничения памяти, пробы и ограниченные
 security contexts.
 
+Pod templates Collector, Grafana и Loki содержат SHA-256 соответствующей
+конфигурации: изменение ConfigMap вызывает rollout даже при неизменной версии
+CLI. Loki хранит логи, индекс, WAL и данные compactor на PVC; compactor удаляет
+логи старше семи дней. Grafana использует встроенные плагины закреплённого образа,
+без автоматического скачивания и обновления preinstall-плагинов.
+
 ## Golden contract
 
 Эталонные каталоги: `tests/golden/lab-{1..5}/.tripgo`. Число ресурсов:
@@ -70,10 +76,10 @@ security contexts.
 | Lab | Files | Kubernetes resources |
 |---:|---:|---:|
 | 1 | 2 | 5 |
-| 2 | 3 | 19 |
-| 3 | 4 | 21 |
-| 4 | 6 | 27 |
-| 5 | 6 | 27 |
+| 2 | 3 | 23 |
+| 3 | 4 | 25 |
+| 4 | 6 | 31 |
+| 5 | 6 | 31 |
 
 `internal/generator/generator_test.go` проверяет:
 

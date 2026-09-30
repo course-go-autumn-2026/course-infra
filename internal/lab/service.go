@@ -462,26 +462,6 @@ func (s *Service) statusWith(ctx context.Context, client dynamic.Interface, conf
 			return RuntimeStatus{}, err
 		}
 	}
-	if config.Lab >= 2 {
-		for _, internal := range []struct {
-			name   string
-			verify func(*unstructured.Unstructured, int, string, string) error
-		}{
-			{name: "otel-collector-metrics", verify: verifyMetricsService},
-			{name: "jaeger-otlp", verify: verifyJaegerOTLPService},
-		} {
-			service, err := client.Resource(serviceResource).Namespace(entry.Namespace).Get(ctx, internal.name, metav1.GetOptions{})
-			if apierrors.IsNotFound(err) {
-				return RuntimeStatus{}, fmt.Errorf("%w: %s service is absent in %s; run tripgoctl environment start", cluster.ErrPrerequisite, internal.name, entry.Namespace)
-			}
-			if err != nil {
-				return RuntimeStatus{}, fmt.Errorf("inspect %s service: %w", internal.name, err)
-			}
-			if err := internal.verify(service, config.Lab, entry.Namespace, clusterID); err != nil {
-				return RuntimeStatus{}, err
-			}
-		}
-	}
 	if config.Lab >= 4 {
 		if err := verifyRedpandaResources(ctx, client, config.Lab, entry.Namespace, clusterID); err != nil {
 			return RuntimeStatus{}, err
@@ -745,6 +725,7 @@ type endpointPort struct {
 type endpointService struct {
 	name         string
 	selectorName string
+	serviceType  string // Empty means NodePort.
 	ports        []endpointPort
 }
 
@@ -756,7 +737,7 @@ type workload struct {
 func workloads(lab int) []workload {
 	items := []workload{{name: "postgres", resource: deploymentResource}}
 	if lab >= 2 {
-		for _, name := range []string{"otel-collector", "jaeger", "prometheus", "grafana"} {
+		for _, name := range []string{"otel-collector", "jaeger", "prometheus", "grafana", "loki"} {
 			items = append(items, workload{name: name, resource: deploymentResource})
 		}
 	}
@@ -784,6 +765,9 @@ func endpointServices(lab int) []endpointService {
 			endpointService{name: "jaeger", ports: []endpointPort{{name: "ui", catalogName: "jaeger", servicePort: 16686, targetPort: "ui"}}},
 			endpointService{name: "prometheus", ports: []endpointPort{{name: "http", catalogName: "prometheus", servicePort: 9090, targetPort: "http"}}},
 			endpointService{name: "grafana", ports: []endpointPort{{name: "http", catalogName: "grafana", servicePort: 3000, targetPort: "http"}}},
+			endpointService{name: "otel-collector-metrics", selectorName: "otel-collector", serviceType: "ClusterIP", ports: []endpointPort{{name: "prometheus", servicePort: 8889, targetPort: "prometheus"}}},
+			endpointService{name: "jaeger-otlp", selectorName: "jaeger", serviceType: "ClusterIP", ports: []endpointPort{{name: "otlp-grpc", servicePort: 4317, targetPort: "otlp-grpc"}}},
+			endpointService{name: "loki", serviceType: "ClusterIP", ports: []endpointPort{{name: "http", servicePort: 3100, targetPort: "http"}}},
 		)
 	}
 	if lab >= 3 {
@@ -812,11 +796,22 @@ func verifyEndpointService(service *unstructured.Unstructured, lab int, namespac
 	if selectorName == "" {
 		selectorName = expected.name
 	}
-	if serviceType != "NodePort" || selector["app.kubernetes.io/name"] != selectorName || selector["app.kubernetes.io/instance"] != namespace+"-"+selectorName || len(ports) != len(expected.ports) {
+	expectedType := expected.serviceType
+	if expectedType == "" {
+		expectedType = "NodePort"
+	}
+	if serviceType != expectedType || selector["app.kubernetes.io/name"] != selectorName || selector["app.kubernetes.io/instance"] != namespace+"-"+selectorName || len(ports) != len(expected.ports) {
 		return fmt.Errorf("%w: %s service does not match the catalog endpoint", cluster.ErrConflict, expected.name)
 	}
 	for _, wanted := range expected.ports {
-		catalogPort, _ := catalog.PortByName(lab, wanted.catalogName)
+		var expectedNodePort int64
+		if expectedType == "NodePort" {
+			catalogPort, ok := catalog.PortByName(lab, wanted.catalogName)
+			if !ok {
+				return fmt.Errorf("unknown catalog endpoint %s", wanted.catalogName)
+			}
+			expectedNodePort = int64(catalogPort.NodePort)
+		}
 		found := false
 		for _, item := range ports {
 			port, ok := item.(map[string]any)
@@ -827,7 +822,7 @@ func verifyEndpointService(service *unstructured.Unstructured, lab int, namespac
 			servicePort, _, _ := unstructured.NestedInt64(port, "port")
 			nodePort, _, _ := unstructured.NestedInt64(port, "nodePort")
 			targetPort, _, _ := unstructured.NestedString(port, "targetPort")
-			if name == wanted.name && servicePort == wanted.servicePort && nodePort == int64(catalogPort.NodePort) && targetPort == wanted.targetPort {
+			if name == wanted.name && servicePort == wanted.servicePort && nodePort == expectedNodePort && targetPort == wanted.targetPort {
 				found = true
 				break
 			}
@@ -920,60 +915,6 @@ func verifyRedpandaResources(ctx context.Context, client dynamic.Interface, lab 
 	}
 	if redpandaClaims != 1 {
 		return fmt.Errorf("%w: expected one owned Redpanda PVC, found %d", cluster.ErrConflict, redpandaClaims)
-	}
-	return nil
-}
-
-func verifyMetricsService(service *unstructured.Unstructured, lab int, namespace, clusterID string) error {
-	if err := verifyResourceOwnership(service, lab, namespace, clusterID); err != nil {
-		return err
-	}
-	serviceType, _, _ := unstructured.NestedString(service.Object, "spec", "type")
-	selector, _, _ := unstructured.NestedStringMap(service.Object, "spec", "selector")
-	ports, _, _ := unstructured.NestedSlice(service.Object, "spec", "ports")
-	validPort := false
-	for _, item := range ports {
-		port, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _, _ := unstructured.NestedString(port, "name")
-		servicePort, _, _ := unstructured.NestedInt64(port, "port")
-		targetPort, _, _ := unstructured.NestedString(port, "targetPort")
-		if name == "prometheus" && servicePort == 8889 && targetPort == "prometheus" {
-			validPort = true
-			break
-		}
-	}
-	if serviceType != "ClusterIP" || selector["app.kubernetes.io/name"] != "otel-collector" || selector["app.kubernetes.io/instance"] != namespace+"-otel-collector" || len(ports) != 1 || !validPort {
-		return fmt.Errorf("%w: otel-collector-metrics service does not match the internal metrics endpoint", cluster.ErrConflict)
-	}
-	return nil
-}
-
-func verifyJaegerOTLPService(service *unstructured.Unstructured, lab int, namespace, clusterID string) error {
-	if err := verifyResourceOwnership(service, lab, namespace, clusterID); err != nil {
-		return err
-	}
-	serviceType, _, _ := unstructured.NestedString(service.Object, "spec", "type")
-	selector, _, _ := unstructured.NestedStringMap(service.Object, "spec", "selector")
-	ports, _, _ := unstructured.NestedSlice(service.Object, "spec", "ports")
-	validPort := false
-	for _, item := range ports {
-		port, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _, _ := unstructured.NestedString(port, "name")
-		servicePort, _, _ := unstructured.NestedInt64(port, "port")
-		targetPort, _, _ := unstructured.NestedString(port, "targetPort")
-		if name == "otlp-grpc" && servicePort == 4317 && targetPort == "otlp-grpc" {
-			validPort = true
-			break
-		}
-	}
-	if serviceType != "ClusterIP" || selector["app.kubernetes.io/name"] != "jaeger" || selector["app.kubernetes.io/instance"] != namespace+"-jaeger" || len(ports) != 1 || !validPort {
-		return fmt.Errorf("%w: jaeger-otlp service does not match the internal trace endpoint", cluster.ErrConflict)
 	}
 	return nil
 }

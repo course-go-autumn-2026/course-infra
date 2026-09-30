@@ -1,9 +1,11 @@
 package lab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/yaml"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -485,12 +488,68 @@ func TestVerifyJaegerOTLPServiceRejectsDrift(t *testing.T) {
 			"ports":    []any{map[string]any{"name": "otlp-grpc", "port": int64(4317), "targetPort": "otlp-grpc"}},
 		},
 	}}
-	if err := verifyJaegerOTLPService(service, 2, "tripgo-lab-02", "cluster-id"); err != nil {
+	expected := endpointService{name: "jaeger-otlp", selectorName: "jaeger", serviceType: "ClusterIP", ports: []endpointPort{{name: "otlp-grpc", servicePort: 4317, targetPort: "otlp-grpc"}}}
+	if err := verifyEndpointService(service, 2, "tripgo-lab-02", "cluster-id", expected); err != nil {
 		t.Fatal(err)
 	}
 	service.Object["spec"].(map[string]any)["ports"] = []any{map[string]any{"name": "otlp-grpc", "port": int64(4318), "targetPort": "otlp-grpc"}}
-	if err := verifyJaegerOTLPService(service, 2, "tripgo-lab-02", "cluster-id"); !errors.Is(err, cluster.ErrConflict) {
+	if err := verifyEndpointService(service, 2, "tripgo-lab-02", "cluster-id", expected); !errors.Is(err, cluster.ErrConflict) {
 		t.Fatalf("drift error = %v", err)
+	}
+}
+
+func TestStatusWithRequiresLokiAndItsInternalService(t *testing.T) {
+	t.Parallel()
+	config := configenv.Config{SchemaVersion: 1, Lab: 2}
+	config.Components, _ = catalog.Components(2)
+	bundle, err := generator.Generate(config, generator.Options{TripgoctlVersion: "test", ClusterID: "cluster-id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objects []runtime.Object
+	for _, file := range bundle.Files {
+		decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(file.Content), 4096)
+		for {
+			object := &unstructured.Unstructured{}
+			if err := decoder.Decode(object); errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if object.GetKind() == "Deployment" {
+				object.SetGeneration(1)
+				object.Object["status"] = map[string]any{"observedGeneration": int64(1), "updatedReplicas": int64(1), "readyReplicas": int64(1), "availableReplicas": int64(1)}
+			}
+			objects = append(objects, object)
+		}
+	}
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), objects...)
+	service := &Service{}
+	status, err := service.statusWith(t.Context(), client, config, "cluster-id")
+	if err != nil || status.State != "ready" || len(status.Components) != 6 || status.Components[5].Name != "loki" {
+		t.Fatalf("status = %+v, %v", status, err)
+	}
+	loki, err := client.Resource(serviceResource).Namespace("tripgo-lab-02").Get(t.Context(), "loki", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range [][]string{{"spec", "type"}, {"spec", "selector", "app.kubernetes.io/instance"}, {"metadata", "annotations", "tripgo.course/cluster-id"}} {
+		drifted := loki.DeepCopy()
+		if err := unstructured.SetNestedField(drifted.Object, "wrong", path...); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Resource(serviceResource).Namespace("tripgo-lab-02").Update(t.Context(), drifted, metav1.UpdateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.statusWith(t.Context(), client, config, "cluster-id"); !errors.Is(err, cluster.ErrConflict) {
+			t.Fatalf("Loki drift %v: %v", path, err)
+		}
+	}
+	if err := client.Resource(serviceResource).Namespace("tripgo-lab-02").Delete(t.Context(), "loki", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.statusWith(t.Context(), client, config, "cluster-id"); !errors.Is(err, cluster.ErrPrerequisite) {
+		t.Fatalf("missing Loki service: %v", err)
 	}
 }
 

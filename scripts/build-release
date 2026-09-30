@@ -75,7 +75,7 @@ def release_notes(version: str, commit: str, built_at: str) -> bytes:
     lines = [
         f"# tripgoctl {version} release inventory",
         "",
-        "Self-contained CLI archives. CI publishes verified main builds to GitHub Releases; no remote Push Service OCI image is published.",
+        "Self-contained CLI archives. CI publishes verified vX.Y.Z tags to GitHub Releases; no remote Push Service OCI image is published.",
         "",
         f"- Build commit: `{commit}`",
         f"- Reproducible build timestamp: `{built_at}`",

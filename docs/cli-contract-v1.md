@@ -138,7 +138,7 @@ Namespace имеет вид `tripgo-lab-01` … `tripgo-lab-05`.
 ```text
 LAB  NAMESPACE       STATE    COMPONENTS
 01   tripgo-lab-01   ready    postgres
-03   tripgo-lab-03   stopped  postgres,otel-collector,jaeger,prometheus,grafana,push-service
+03   tripgo-lab-03   stopped  postgres,otel-collector,jaeger,prometheus,grafana,loki,push-service
 ```
 
 ### `environment logs <component> [--follow] [--tail N]`

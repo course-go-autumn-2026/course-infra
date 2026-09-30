@@ -1,82 +1,141 @@
-#!/bin/sh
-# No remote changes: gh is mocked; archives and the git checkout are temporary.
-set -eu
-source_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/tripgo-publish-test.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-root=$tmp/repo
-mkdir -p "$root/scripts" "$root/build/release" "$tmp/tools"
-cp "$source_root/scripts/publish-release" "$root/scripts/"
-git init -q "$root"
-git -C "$root" -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m fixture
-commit=$(git -C "$root" rev-parse HEAD)
-version=main-$commit
-for os in darwin linux; do
-    for arch in amd64 arm64; do
-        printf 'fixture archive\n' > "$root/build/release/tripgoctl_${version}_${os}_${arch}.tar.gz"
-    done
-done
-(
-    cd "$root/build/release"
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum ./*.tar.gz > SHA256SUMS
-    else
-        shasum -a 256 ./*.tar.gz > SHA256SUMS
-    fi
-)
-cat > "$tmp/tools/gh" <<'EOF'
-#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$FIXTURE_CALLS"
-case "$1 $2" in
-    'api repos/example/course-infra/commits/main') printf '%s\n' "$FIXTURE_HEAD" ;;
-    'release view')
-        [ "$FIXTURE_RELEASE" != missing ] || exit 1
-        printf '%s\n' "$FIXTURE_RELEASE"
-        ;;
-    'release create')
-        [ "$#" -eq 18 ]
-        case "$*" in *"--target $FIXTURE_HEAD --draft --latest=false"*) ;; *) exit 9 ;; esac
-        [ "${FIXTURE_FAIL_UPLOAD:-0}" = 0 ] || exit 7
-        ;;
-    'release edit')
-        case "$*" in *'--draft=false --latest') ;; *) exit 9 ;; esac
-        ;;
-    *) echo "unexpected gh call: $*" >&2; exit 9 ;;
-esac
-EOF
-chmod +x "$tmp/tools/gh" "$root/scripts/publish-release"
-export PATH="$tmp/tools:$PATH" GH_REPO=example/course-infra
-export FIXTURE_CALLS="$tmp/calls" FIXTURE_HEAD="$commit" FIXTURE_RELEASE=missing
+#!/usr/bin/env python3
+"""Publication fixtures: no remote changes; gh and release archives are mocked."""
 
-"$root/scripts/publish-release" >/dev/null
-grep -F "release create $version --target $commit --draft --latest=false" "$FIXTURE_CALLS" >/dev/null
-test "$(tail -n 1 "$FIXTURE_CALLS")" = "release edit $version --draft=false --latest"
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
-for state in stale published draft upload checksum; do
-    : > "$FIXTURE_CALLS"
-    case "$state" in
-        stale) FIXTURE_HEAD=old "$root/scripts/publish-release" >/dev/null ;;
-        published) FIXTURE_RELEASE=false "$root/scripts/publish-release" >/dev/null ;;
-        draft)
-            if FIXTURE_RELEASE=true "$root/scripts/publish-release" >/dev/null 2>&1; then
-                echo 'publisher accepted an existing draft' >&2; exit 1
-            fi ;;
-        upload)
-            if FIXTURE_FAIL_UPLOAD=1 "$root/scripts/publish-release" >/dev/null 2>&1; then
-                echo 'publisher accepted a failed upload' >&2; exit 1
-            fi ;;
-        checksum)
-            printf 'corrupted\n' >> "$root/build/release/tripgoctl_${version}_linux_amd64.tar.gz"
-            if "$root/scripts/publish-release" >/dev/null 2>&1; then
-                echo 'publisher accepted a corrupted archive' >&2; exit 1
-            fi ;;
-    esac
-    if grep '^release edit ' "$FIXTURE_CALLS" >/dev/null; then
-        echo "publisher changed latest for $state" >&2; exit 1
-    fi
-    if [ "$state" != upload ] && grep '^release create ' "$FIXTURE_CALLS" >/dev/null; then
-        echo "publisher created a release for $state" >&2; exit 1
-    fi
-done
-echo 'Release publication fixtures passed (draft-first, stale run, existing release, failed upload, and checksum failure)'
+SOURCE = Path(__file__).resolve().parent.parent
+
+with tempfile.TemporaryDirectory(prefix="tripgo-publish-test-") as temporary:
+    root = Path(temporary) / "repo"
+    tools = Path(temporary) / "tools"
+    directory = root / "build" / "release"
+    directory.mkdir(parents=True)
+    (root / "scripts").mkdir()
+    tools.mkdir()
+    shutil.copy2(SOURCE / "scripts" / "publish-release", root / "scripts" / "publish-release")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+                    "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+    version = "v1.9.0"
+    archives = [directory / f"tripgoctl_{version}_{os_name}_{arch}.tar.gz"
+                for os_name in ("darwin", "linux") for arch in ("amd64", "arm64")]
+    for archive in archives:
+        archive.write_bytes(b"fixture archive\n")
+    (directory / "SHA256SUMS").write_text("".join(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n" for archive in archives))
+    (directory / "RELEASE_NOTES.md").write_text("fixture notes\n")
+    (root / "scripts" / "install-tripgoctl").write_text("fixture installer\n")
+    mock = tools / "gh"
+    mock.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+path = Path(os.environ["FIXTURE_CALLS"])
+previous = path.read_text()
+with path.open("a") as output:
+    output.write(json.dumps(args) + "\\n")
+state = os.environ.get("FIXTURE_STATE", "")
+commit = os.environ["FIXTURE_COMMIT"]
+if args[0] == "api":
+    route = args[1]
+    if state == "api-failure" or (state == "missing-tag" and "/git/ref/" in route):
+        sys.exit(1)
+    if "/git/ref/tags/" in route:
+        assert route == "repos/example/course-infra/git/ref/tags/" + os.environ["VERSION"]
+        target = "old" if state == "mismatch" or (state == "moved" and '"create"' in previous) else commit
+        result = {"object": {"type": "commit", "sha": target}}
+        if state == "annotated":
+            result = {"object": {"type": "tag", "sha": "annotation"}}
+    elif route == "repos/example/course-infra/git/tags/annotation":
+        result = {"object": {"type": "commit", "sha": commit}}
+    elif route == "repos/example/course-infra/releases?per_page=100":
+        assert args[2:] == ["--paginate", "--slurp"]
+        if state == "list-failure":
+            sys.exit(1)
+        result = json.loads(os.environ.get("FIXTURE_RELEASES", "[[]]"))
+    else:
+        raise AssertionError(args)
+    print(json.dumps(result))
+elif args[:2] == ["release", "create"]:
+    assert args[2] == os.environ["VERSION"]
+    assert "--verify-tag" in args and "--draft" in args and "--latest=false" in args
+    assert args[args.index("--target") + 1] == commit
+    assert args[-7:-3] == [f"build/release/tripgoctl_{os.environ['VERSION']}_{system}_{arch}.tar.gz"
+                          for system in ("darwin", "linux") for arch in ("amd64", "arm64")]
+    assert args[-3:] == ["build/release/SHA256SUMS", "build/release/RELEASE_NOTES.md", "scripts/install-tripgoctl"]
+    if state == "upload":
+        sys.exit(7)
+elif args[:2] == ["release", "edit"]:
+    assert args[2] == os.environ["VERSION"] and "--draft=false" in args
+    assert args[-1] in ["--latest=true", "--latest=false"]
+else:
+    raise AssertionError(args)
+''')
+    mock.chmod(0o755)
+    calls_path = Path(temporary) / "calls"
+    environment = os.environ | {
+        "PATH": str(tools) + os.pathsep + os.environ["PATH"], "GH_REPO": "example/course-infra",
+        "VERSION": version, "COMMIT": commit, "FIXTURE_COMMIT": commit, "FIXTURE_CALLS": str(calls_path),
+        "FIXTURE_STATE": "", "FIXTURE_RELEASES": "[[]]",
+    }
+
+    def check(name, success=True, latest=None, created=False, **overrides):
+        calls_path.write_text("")
+        result = subprocess.run([str(root / "scripts" / "publish-release")], env=environment | overrides,
+                                capture_output=True, text=True)
+        assert (result.returncode == 0) == success, (name, result.stdout, result.stderr)
+        calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+        creates = [call for call in calls if call[:2] == ["release", "create"]]
+        edits = [call for call in calls if call[:2] == ["release", "edit"]]
+        assert bool(creates) == created, (name, calls)
+        if latest is None:
+            assert not edits, (name, calls)
+        else:
+            assert len(edits) == 1 and edits[0][-1] == f"--latest={str(latest).lower()}", (name, calls)
+
+    def release(tag, draft=False, prerelease=False):
+        return {"tag_name": tag, "draft": draft, "prerelease": prerelease}
+
+    check("first", latest=True, created=True)
+    check("annotated tag", latest=True, created=True, FIXTURE_STATE="annotated")
+    check("legacy migration", latest=True, created=True,
+          FIXTURE_RELEASES=json.dumps([[release("main-" + commit)]]))
+    check("newer patch/minor", latest=True, created=True,
+          FIXTURE_RELEASES=json.dumps([[release("v1.8.99")]]))
+    check("older minor on later page", latest=False, created=True,
+          FIXTURE_RELEASES=json.dumps([[release("v1.8.0")], [release("v1.10.0")]]))
+    check("older major", latest=False, created=True,
+          FIXTURE_RELEASES=json.dumps([[release("v2.0.0")]]))
+    check("ignore drafts and prereleases", latest=True, created=True,
+          FIXTURE_RELEASES=json.dumps([[release("v2.0.0", draft=True), release("v3.0.0", prerelease=True)]]))
+    check("published unchanged", FIXTURE_RELEASES=json.dumps([[release(version)]]))
+    check("draft refused", success=False, FIXTURE_RELEASES=json.dumps([[release(version, draft=True)]]))
+    for state in ("missing-tag", "mismatch", "api-failure", "list-failure"):
+        check(state, success=False, FIXTURE_STATE=state)
+    check("wrong checkout", success=False, COMMIT="wrong")
+    for invalid in ("dev-" + commit, "v01.2.3", "v1.02.3", "v1.2.03", "v1.2.3-rc.1", "1.2.3", "v1.2.3\nother"):
+        check("invalid version " + repr(invalid), success=False, VERSION=invalid)
+    check("failed upload", success=False, created=True, FIXTURE_STATE="upload")
+    check("tag moved during upload", success=False, created=True, FIXTURE_STATE="moved")
+    notes = directory / "RELEASE_NOTES.md"
+    notes.unlink()
+    check("missing asset", success=False)
+    notes.write_text("fixture notes\n")
+    manifest = directory / "SHA256SUMS"
+    complete = manifest.read_text()
+    manifest.write_text("\n".join(complete.splitlines()[1:]) + "\n")
+    check("incomplete checksum inventory", success=False)
+    manifest.write_text(complete + complete.splitlines()[0] + "\n")
+    check("duplicate checksum entry", success=False)
+    manifest.write_text(complete)
+    archives[0].write_bytes(b"corrupted\n")
+    check("checksum failure", success=False)
+
+print("Release publication fixtures passed (stable tags, annotated tags, numeric latest, legacy migration, immutable releases, and failure safety)")

@@ -1,8 +1,8 @@
 # Release pipeline v1
 
 `make release` builds locally and never publishes. The GitHub Actions workflow
-`.github/workflows/release-platform-check.yml` publishes verified `main` builds
-as GitHub Releases. Push Service OCI images are not published remotely.
+`.github/workflows/release-platform-check.yml` publishes verified `vX.Y.Z` tag
+builds as GitHub Releases. Push Service OCI images are not published remotely.
 
 ## Reproducible build
 
@@ -12,7 +12,7 @@ Start from a clean checkout with the pinned public
 ```bash
 make clean
 make proto-tools-install
-make release-repro-check VERSION="main-$(git rev-parse HEAD)" \
+make release-repro-check VERSION=v0.1.0 \
   COMMIT="$(git rev-parse HEAD)" \
   SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
 ```
@@ -46,33 +46,50 @@ compares checksums and notes. CI currently uses the latest Go 1.24 patch.
 
 ## CI and publication
 
-The workflow runs on every PR, push to `main`, and manual dispatch:
+The workflow runs on every PR, push to `main`, push of a `v*` tag, and manual
+dispatch. Tag runs must use stable `vX.Y.Z` versions without leading zeroes;
+prerelease/build suffixes are rejected before building:
 
 1. `make source-check` (format, vet, race tests, script fixtures, contracts,
    generated protobuf, and staging cleanup).
 2. Build the four-platform release twice on Linux and verify reproducibility.
-   Version is `main-<full HEAD SHA>`; build time is the source commit timestamp.
+   Version is the tag for tag runs, or `dev-<full HEAD SHA>` for branch/PR runs;
+   build time is the source commit timestamp. The full build commit is retained
+   independently of the readable version.
 3. Upload `build/release` as the `tripgoctl-release` Actions artifact, retained
    for 14 days. No source tree, submodule, or tool cache is uploaded.
 4. Download those exact archives on native Linux/macOS amd64/arm64 runners.
    Run installer fixtures, install the matching archive, check build metadata
    and `--help`. Linux additionally runs the full Docker/kind runtime gate.
 5. Only after all checks pass, `scripts/publish-release` publishes from trusted
-   `course-go-autumn-2026/course-infra` `main` push/manual runs. PRs and forks
-   never publish, and no job uses `pull_request_target`.
+   `course-go-autumn-2026/course-infra` tag push/manual runs. Branches, PRs, and
+   forks never publish, and no job uses `pull_request_target`.
 
 Only the publication job has `contents: write`. It uses `GITHUB_TOKEN`, not a
 personal token. Checkout does not persist credentials; actions are pinned to
-commit SHAs. Main runs are serialized without cancellation during publication.
-The publisher skips a commit that is no longer `main` HEAD, so rerunning an old
-workflow cannot move `latest` backwards.
+commit SHAs. Same-ref runs are not cancelled except for PRs; publication jobs
+share one concurrency group across all tags. GitHub concurrency does not promise
+version order. The publisher compares numeric `(major, minor, patch)` tuples with
+all published stable releases, across all API pages. Older versions are still
+published, but with `latest=false`; `v0.10.0` sorts above `v0.9.0`.
+
+The publisher requires `GH_REPO`, `VERSION`, and `COMMIT`. It verifies that
+`COMMIT` equals the checked-out build commit and that the remote tag resolves to
+that commit, following annotated tags as needed. It checks the tag again after
+uploading, before making the draft public. A moved/missing tag or failed API
+request fails closed; advancing `main` after tagging does not invalidate a release.
 
 Release assets are the four tested archives, `SHA256SUMS`, `RELEASE_NOTES.md`,
 and `scripts/install-tripgoctl` from the same checked-out commit. The publisher
-rechecks archive checksums, creates a **draft** with an explicit target commit,
-uploads all assets, then publishes and marks it `latest`. Nothing is rebuilt.
+rechecks archive checksums, creates a **draft** with an explicit target commit
+and `--verify-tag` (never creating a missing tag), uploads all assets, then
+publishes it. Only a version higher than all published stable versions becomes
+`latest`. Nothing is rebuilt.
 These are ordinary releases, not GitHub prereleases: `/releases/latest` does not
-select prereleases. There is no separate stable channel yet.
+select prereleases. Only stable `vX.Y.Z` tags are supported; there is no RC channel
+or automatic version increment. Legacy `main-<SHA>` releases remain installable
+but are not included in numeric version comparisons, so the first stable tagged
+release replaces them as `latest`.
 
 Published versions are left unchanged. If an upload fails, the release stays
 a draft and `latest` does not change. Inspect the remaining draft's assets and
@@ -83,6 +100,28 @@ Enable GitHub release immutability to protect published releases on the server.
 Actions artifacts are for CI/debugging, not anonymous installation: they expire
 and require GitHub authentication. Public Release assets provide the download URLs
 used by students. Pinned release tags allow repeatable installs and rollback.
+
+## Creating a release
+
+After merging and committing all release inputs, including the workflow:
+
+```sh
+git switch main
+git pull --ff-only
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+Use a fresh version each time. Pushing the tag starts the complete verification
+pipeline and publishes only if every required job passes. Do not create a
+published GitHub Release manually before CI; an existing published release is
+left unchanged. A manual rerun must select the tag, not `main`.
+
+Protect `v*` tags against updates/deletion with a GitHub repository ruleset and
+restrict tag creation to maintainers. Enable release immutability as well: local
+verification cannot prevent an external tag change after its final API check.
+Repository settings and remote tag creation are maintainer actions, not performed
+by local build commands.
 
 ## Installation
 
@@ -108,7 +147,7 @@ For local build output, specify its exact version without network access:
 
 ```bash
 TRIPGOCTL_RELEASE_DIR=build/release \
-  ./scripts/install-tripgoctl "main-$(git rev-parse HEAD)"
+  ./scripts/install-tripgoctl v0.1.0
 ```
 
 Both `TRIPGOCTL_RELEASE_DIR` and a custom `TRIPGOCTL_BASE_URL` require an explicit
@@ -151,8 +190,8 @@ Defining these jobs does not prove they passed; check their run results.
    enable release immutability. Keep publication write permissions scoped to its job.
 4. Complete the macOS Docker acceptance above. Commit the gitlink, symlinks,
    metadata, and workflow changes together; never bypass the clean-release gate.
-5. Make `course-infra` public, then merge to `main` or manually dispatch the
-   workflow from `main`. Check the native jobs and all seven Release assets.
+5. Make `course-infra` public, merge the release changes to `main`, and push a
+   new stable tag as below. Check the native jobs and all seven Release assets.
 6. From a clean machine, test anonymous latest and pinned installs, `version`,
    `doctor`, and the lab runtime. Docker must be running for infrastructure use.
 
