@@ -14,7 +14,7 @@ usage() {
 Usage: install-tripgoctl [--install-dir DIR] [VERSION]
 
 Install a verified tripgoctl release on macOS or Linux (amd64/arm64).
-VERSION defaults to latest (the newest successfully published main build).
+VERSION defaults to latest (the highest successfully published stable version).
 
 Environment:
   TRIPGOCTL_INSTALL_DIR   Installation directory (overrides the default)

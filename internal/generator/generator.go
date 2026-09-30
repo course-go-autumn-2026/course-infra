@@ -3,6 +3,7 @@ package generator
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"regexp"
@@ -125,7 +126,7 @@ func Generate(config environment.Config, options Options) (Bundle, error) {
 		case catalog.Postgres:
 			manifests = append(manifests, manifest{name: "postgres.yaml", template: "postgres.yaml.tmpl", images: []string{"postgres"}})
 		case catalog.Observability:
-			manifests = append(manifests, manifest{name: "observability.yaml", template: "observability.yaml.tmpl", images: []string{"otel-collector", "prometheus", "grafana", "jaeger"}})
+			manifests = append(manifests, manifest{name: "observability.yaml", template: "observability.yaml.tmpl", images: []string{"otel-collector", "prometheus", "grafana", "jaeger", "loki"}})
 		case catalog.Push:
 			manifests = append(manifests, manifest{name: "push.yaml", template: "push.yaml.tmpl", images: []string{"push-service"}})
 		case catalog.Redpanda:
@@ -138,7 +139,15 @@ func Generate(config environment.Config, options Options) (Bundle, error) {
 		}
 	}
 
+	var parsed *template.Template
 	parsed, err := template.New("manifests").Funcs(template.FuncMap{
+		"configChecksum": func(name string, data model) (string, error) {
+			var config bytes.Buffer
+			if err := parsed.ExecuteTemplate(&config, name, data); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%x", sha256.Sum256(config.Bytes())), nil
+		},
 		"indent": func(spaces int, value string) string {
 			prefix := strings.Repeat(" ", spaces)
 			return prefix + strings.ReplaceAll(strings.TrimSuffix(value, "\n"), "\n", "\n"+prefix) + "\n"

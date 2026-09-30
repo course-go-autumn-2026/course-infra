@@ -26,7 +26,7 @@ tripgoctl
 На этапе 1 локальный `make verify` отдельно собирает и тестирует оба бинарника.
 На этапе 3 решено не публиковать образ Push Service во внешнем OCI registry.
 Самодостаточные релизы CLI собираются локально и публикуются из проверенных
-`main`-сборок CI. Текущий процесс описан в [`release-v1.md`](release-v1.md).
+теговых сборок `vX.Y.Z` в CI. Текущий процесс описан в [`release-v1.md`](release-v1.md).
 
 Границы пакетов:
 
@@ -237,7 +237,7 @@ Go `go:embed` не следует символическим ссылкам и �
 публикуемый артефакт здесь CLI. Workflow `.github/workflows/release-platform-check.yml`
 использует инициализированный submodule на закреплённом commit, проверяет
 финальные архивы на нативных Linux/macOS runners и публикует только проверенные
-`main`-сборки. Проверка Docker/kind автоматизирована на Linux; полный macOS-прогон
+теговые сборки `vX.Y.Z`. Проверка Docker/kind автоматизирована на Linux; полный macOS-прогон
 с Docker выполняется отдельно перед первой публичной публикацией. Ограничения
 и приёмка: [`release-v1.md`](release-v1.md).
 
@@ -273,7 +273,7 @@ repository: localhost:5001/tripgo-push-service
 и запуска на amd64/arm64.
 
 Этап 12: двухфазное встраивание файлов и локальные архивы с `SHA256SUMS`. CI публикует проверенные архивы и установщик в GitHub Releases
-`main-<полный SHA>`. Локальная команда сборки ничего не публикует; готовые версии
+с версией из тега `vX.Y.Z`. Локальная команда сборки ничего не публикует; готовые версии
 не перезаписываются.
 
 ## 10. Бумажная проверка labs 1–5
@@ -281,7 +281,7 @@ repository: localhost:5001/tripgo-push-service
 | Lab | `environment start` | Host workflow | Dockerfile студента? |
 |---:|---|---|:---:|
 | 1 | namespace + PostgreSQL + `.env` | `make migrate`, `make run`, HTTP `:8080` | нет |
-| 2 | lab 1 + isolated OTel/Prometheus/Grafana/Jaeger | service exports OTLP to `localhost:22318` | нет |
+| 2 | lab 1 + isolated OTel/Prometheus/Grafana/Jaeger/Loki | service exports OTLP to `localhost:22318` | нет |
 | 3 | lab 2 + Push | service calls HTTP `localhost:23809` | нет |
 | 4 | lab 3 + Redpanda/topics | Push gRPC `24905`, Kafka `24092`, own gRPC `:9091` | нет |
 | 5 | isolated full stack + resilience env | same components on lab 5 ports | нет |

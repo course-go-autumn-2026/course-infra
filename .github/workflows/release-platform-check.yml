@@ -3,13 +3,14 @@ name: tripgoctl release
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Never interrupt a main publication halfway through uploading its assets.
+# Never interrupt a tag run halfway through uploading its assets.
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -30,16 +31,27 @@ jobs:
         with:
           go-version: '1.24.x'
           cache: true
+      - name: Release metadata
+        id: metadata
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          version="dev-$commit"
+          if [ "$REF_TYPE" = tag ]; then
+            if ! printf '%s\n' "$REF_NAME" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+              echo "Release tag must have the form vX.Y.Z without leading zeroes" >&2
+              exit 1
+            fi
+            version=$REF_NAME
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Source checks
         run: |
           make proto-tools-install
           make source-check
-      - name: Release metadata
-        id: metadata
-        run: |
-          commit=$(git rev-parse HEAD)
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "version=main-$commit" >> "$GITHUB_OUTPUT"
       - name: Build reproducible four-platform archives
         env:
           VERSION: ${{ steps.metadata.outputs.version }}
@@ -123,10 +135,13 @@ jobs:
     needs: [build, native]
     if: >-
       github.repository == 'course-go-autumn-2026/course-infra' &&
-      github.ref == 'refs/heads/main' &&
+      github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    concurrency:
+      group: tripgoctl-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -142,4 +157,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ needs.build.outputs.commit }}
         run: ./scripts/publish-release

@@ -17,6 +17,7 @@ Tag хранится для учёта происхождения образа; 
 | OTel Collector contrib | `docker.io/otel/opentelemetry-collector-contrib:0.159.0` | `sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc` |
 | Prometheus | `docker.io/prom/prometheus:v3.14.0` | `sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0` |
 | Grafana | `docker.io/grafana/grafana:13.2.0` | `sha256:3fd54ae1214669f8355f065ec9f6445d5279a3d77095ab048ca045685272429b` |
+| Loki | `docker.io/grafana/loki:3.7.8` | `sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193` |
 | Jaeger | `docker.io/jaegertracing/jaeger:2.20.0` | `sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8` |
 | Redpanda | `docker.io/redpandadata/redpanda:v26.2.2` | `sha256:468bd13a9f2bd24794cb7fddc867c767fb1008b9a07b297b89fde48c564d7d96` |
 | Redpanda Console | `docker.redpanda.com/redpandadata/console:v3.11.0` | `sha256:bf5ed3ee83e5b2dd6d1c1f1c8095ba252f384ce9354e7a3d2f780f0b4a486c09` |

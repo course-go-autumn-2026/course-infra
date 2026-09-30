@@ -91,6 +91,13 @@ retry_trace_count() {
 		attempt=$((attempt+1)); [ "$attempt" -lt 45 ] || { echo "trace query did not reach count $expected: $url" >&2; return 1; }; sleep 2
 	done
 }
+retry_log_count() {
+	url=$1 query=$2 expected=$3 attempt=0
+	until [ "$(curl -fsSG --data-urlencode "query=$query" --data-urlencode "start=$now" "$url" | jq -er '
+		if .status == "success" then [.data.result[].values[]] | length else error("Loki query failed") end')" = "$expected" ]; do
+		attempt=$((attempt+1)); [ "$attempt" -lt 45 ] || { echo "log query did not reach count $expected: $url $query" >&2; return 1; }; sleep 2
+	done
+}
 post_status() { curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data-binary "$2" "$1"; }
 
 "$tripgoctl" cluster start
@@ -116,9 +123,9 @@ done
 
 list=$($tripgoctl environment list)
 for expected in \
-	'02   tripgo-lab-02   ready    postgres,otel-collector,jaeger,prometheus,grafana' \
-	'04   tripgo-lab-04   ready    postgres,otel-collector,jaeger,prometheus,grafana,push-service,redpanda,redpanda-console,redpanda-topic-reconciler' \
-	'05   tripgo-lab-05   ready    postgres,otel-collector,jaeger,prometheus,grafana,push-service,redpanda,redpanda-console,redpanda-topic-reconciler'; do
+	'02   tripgo-lab-02   ready    postgres,otel-collector,jaeger,prometheus,grafana,loki' \
+	'04   tripgo-lab-04   ready    postgres,otel-collector,jaeger,prometheus,grafana,loki,push-service,redpanda,redpanda-console,redpanda-topic-reconciler' \
+	'05   tripgo-lab-05   ready    postgres,otel-collector,jaeger,prometheus,grafana,loki,push-service,redpanda,redpanda-console,redpanda-topic-reconciler'; do
 	printf '%s\n' "$list" | grep -F "$expected" >/dev/null
 done
 
@@ -130,13 +137,25 @@ if (cd "$work/lab2" && "$tripgoctl" environment status); then
 fi
 (cd "$work/lab2" && "$tripgoctl" environment start >/dev/null)
 
-# Grafana must expose both namespace-local telemetry datasources without login.
+# Status must reject and repair a missing namespace-local log endpoint.
+kubectl_in_node -n tripgo-lab-02 delete service loki >/dev/null
+if (cd "$work/lab2" && "$tripgoctl" environment status); then
+	echo 'environment status reported ready without loki' >&2
+	exit 1
+fi
+(cd "$work/lab2" && "$tripgoctl" environment start >/dev/null)
+
+# Grafana must expose all three namespace-local telemetry datasources without login.
 prometheus_datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Prometheus)
 printf '%s' "$prometheus_datasource" | grep -F 'http://prometheus:9090' >/dev/null
 prometheus_datasource_uid=$(printf '%s' "$prometheus_datasource" | jq -er .uid)
 jaeger_datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Jaeger)
 printf '%s' "$jaeger_datasource" | grep -F 'http://jaeger:16686' >/dev/null
 jaeger_datasource_uid=$(printf '%s' "$jaeger_datasource" | jq -er .uid)
+loki_datasource=$(curl -fsS http://localhost:22300/api/datasources/name/Loki)
+printf '%s' "$loki_datasource" | jq -e '
+	.uid == "loki" and .url == "http://loki:3100" and
+	any(.jsonData.derivedFields[]; .matcherType == "label" and .matcherRegex == "trace_id" and .datasourceUid == "jaeger")' >/dev/null
 
 # Exact topic shape, automatic repair, and Console API visibility.
 assert_topics tripgo-lab-04
@@ -220,6 +239,10 @@ EOF
 	cat >"$work/metric-$lab.json" <<EOF
 {"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"$service"}}]},"scopeMetrics":[{"scope":{"name":"integration"},"metrics":[{"name":"$metric","gauge":{"dataPoints":[{"timeUnixNano":"$now","asDouble":$lab}]}}]}]}]}
 EOF
+	cat >"$work/log-$lab.json" <<EOF
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"$service"}}]},"scopeLogs":[{"scope":{"name":"integration"},"logRecords":[{"timeUnixNano":"$now","severityNumber":9,"severityText":"INFO","body":{"stringValue":"log-lab-$lab-only"},"traceId":"0000000000000000000000000000000$lab","spanId":"000000000000000$lab"}]}]}]}
+EOF
+	curl -fsS -H 'Content-Type: application/json' --data-binary @"$work/log-$lab.json" "http://localhost:$((base+318))/v1/logs" | jq -e '(.partialSuccess.rejectedLogRecords // 0 | tonumber) == 0' >/dev/null
 	curl -fsS -H 'Content-Type: application/json' --data-binary @"$work/trace-$lab.json" "http://localhost:$((base+318))/v1/traces" >/dev/null
 	curl -fsS -H 'Content-Type: application/json' --data-binary @"$work/metric-$lab.json" "http://localhost:$((base+318))/v1/metrics" >/dev/null
 done
@@ -229,16 +252,33 @@ for lab in 2 4 5; do
 		expected=0; [ "$lab" = "$marker" ] && expected=1
 		retry_query_count "http://localhost:$((base+909))/api/v1/query?query=integration_lab${marker}_only_metric" "$expected"
 		retry_trace_count "http://localhost:$((base+686))/api/traces?service=integration-lab${marker}-only&operation=trace-lab-${marker}-only&limit=20" "$expected"
+		retry_log_count "http://localhost:$((base+300))/api/datasources/proxy/uid/loki/loki/api/v1/query_range" "{service_name=\"integration-lab${marker}-only\"}" "$expected"
 	done
 done
 retry_query_count "http://localhost:22300/api/datasources/proxy/uid/$prometheus_datasource_uid/api/v1/query?query=integration_lab2_only_metric" 1
 retry_trace_count "http://localhost:22300/api/datasources/proxy/uid/$jaeger_datasource_uid/api/traces?service=integration-lab2-only&operation=trace-lab-2-only&limit=20" 1
 
+# OTLP trace identifiers are structured metadata, not index labels.
+curl -fsSG --data-urlencode 'query={service_name="integration-lab2-only"}' --data-urlencode "start=$now" \
+	http://localhost:22300/api/datasources/proxy/uid/loki/loki/api/v1/query_range | jq -e '
+	any(.data.result[]; .stream.trace_id == "00000000000000000000000000000002" and
+		any(.values[]; .[1] == "log-lab-2-only"))' >/dev/null
+curl -fsSG --data-urlencode 'match[]={service_name="integration-lab2-only"}' --data-urlencode "start=$now" \
+	http://localhost:22300/api/datasources/proxy/uid/loki/loki/api/v1/series | jq -e '
+	.status == "success" and (.data | length) == 1 and
+	all(.data[]; .service_name == "integration-lab2-only" and .trace_id == null and .span_id == null)' >/dev/null
+
+# Logs survive stop/start while peer environments remain ready.
+(cd "$work/lab2" && "$tripgoctl" environment stop >/dev/null)
+(cd "$work/lab4" && "$tripgoctl" environment status | grep -F 'Status:      ready' >/dev/null)
+(cd "$work/lab2" && "$tripgoctl" environment start >/dev/null)
+retry_log_count http://localhost:22300/api/datasources/proxy/uid/loki/loki/api/v1/query_range '{service_name="integration-lab2-only"}' 1
+
 # Every old owned pod UID disappears and a complete disjoint ready UID set
 # replaces it while all host endpoints and connect output remain stable.
 for lab in 2 4 5; do
 	namespace=tripgo-lab-0$lab
-	expected_pods=5; [ "$lab" -lt 4 ] || expected_pods=9
+	expected_pods=6; [ "$lab" -lt 4 ] || expected_pods=10
 	old_uids=$work/pods-before-$lab
 	capture_owned_pod_uids "$namespace" "$old_uids" "$expected_pods"
 	before_connect=$(cd "$work/lab$lab" && "$tripgoctl" connect)
@@ -255,13 +295,17 @@ for lab in 2 4 5; do
 	(cd "$root" && go run ./tests/integration/otlp-grpc-client -endpoint "localhost:$((base+317))" \
 		-service "integration-lab${lab}-grpc" -span "grpc-trace-lab-${lab}")
 	retry_trace_count "http://localhost:$((base+686))/api/traces?service=integration-lab${lab}-grpc&operation=grpc-trace-lab-${lab}&limit=20" 1
+	retry_log_count "http://localhost:$((base+300))/api/datasources/proxy/uid/loki/loki/api/v1/query_range" "{service_name=\"integration-lab${lab}-grpc\"}" 1
+	retry_log_count "http://localhost:$((base+300))/api/datasources/proxy/uid/loki/loki/api/v1/query_range" "{service_name=\"integration-lab${lab}-only\"}" 1
 	[ "$lab" -lt 4 ] || { curl -fsS "http://localhost:$((base+809))/health" >/dev/null; (cd "$root" && go run ./tests/integration/push-grpc-client -endpoint "localhost:$((base+905))" -expect success); curl -fsS "http://localhost:$((base+81))/admin/health" >/dev/null; (cd "$root" && go run ./tests/integration/kafka-client -endpoint "localhost:$((base+92))" -group "integration-restart-$lab" -message "restart-$lab"); }
 done
 
-# Reset removes persisted Kafka records and restores the desired topic shape.
+# Reset removes persisted Kafka records and logs and restores the desired topic shape.
 (cd "$work/lab4" && "$tripgoctl" environment reset --yes)
 (cd "$work/lab4" && "$tripgoctl" environment start >/dev/null)
 assert_topics tripgo-lab-04
+retry_log_count http://localhost:24300/api/datasources/proxy/uid/loki/loki/api/v1/query_range '{service_name="integration-lab4-only"}' 0
+retry_log_count http://localhost:25300/api/datasources/proxy/uid/loki/loki/api/v1/query_range '{service_name="integration-lab5-only"}' 1
 if (cd "$root" && go run ./tests/integration/kafka-client -endpoint localhost:24092 \
 	-group integration-reset-read -message kafka-lab4 -expected-key integration-group-lab4 -publish=false -timeout=5s); then
 	echo 'lab 4 Kafka record survived reset' >&2

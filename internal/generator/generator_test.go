@@ -2,6 +2,7 @@ package generator_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -69,8 +70,53 @@ func TestWorkloadReplicaOverrideCoversLab3Deployments(t *testing.T) {
 	for _, file := range bundle.Files {
 		counts[file.Name] = bytes.Count(file.Content, []byte("  replicas: 0\n"))
 	}
-	if counts["postgres.yaml"] != 1 || counts["observability.yaml"] != 4 || counts["push.yaml"] != 1 {
+	if counts["postgres.yaml"] != 1 || counts["observability.yaml"] != 5 || counts["push.yaml"] != 1 {
 		t.Fatalf("zero replica counts = %#v", counts)
+	}
+}
+
+func TestObservabilityConfigsMatchRolloutChecksums(t *testing.T) {
+	t.Parallel()
+	bundle, err := generator.Generate(fixtureConfig(t, 2), testOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checksums := map[string]string{}
+	deployments := map[string]string{}
+	for _, file := range bundle.Files {
+		decoder := yaml.NewDecoder(bytes.NewReader(file.Content))
+		for {
+			var object map[string]any
+			if err := decoder.Decode(&object); errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			metadata := object["metadata"].(map[string]any)
+			name := metadata["name"].(string)
+			if object["kind"] == "ConfigMap" {
+				for _, value := range object["data"].(map[string]any) {
+					var indented strings.Builder
+					for _, line := range strings.SplitAfter(value.(string), "\n") {
+						if line != "" {
+							indented.WriteString("    " + line)
+						}
+					}
+					checksums[name] = fmt.Sprintf("%x", sha256.Sum256([]byte(indented.String())))
+				}
+			}
+			if object["kind"] == "Deployment" {
+				spec := object["spec"].(map[string]any)
+				pod := spec["template"].(map[string]any)["metadata"].(map[string]any)
+				checksum, _ := pod["annotations"].(map[string]any)["checksum/config"].(string)
+				deployments[name] = checksum
+			}
+		}
+	}
+	for deployment, config := range map[string]string{"otel-collector": "otel-collector-config", "grafana": "grafana-provisioning", "loki": "loki-config"} {
+		if checksums[config] == "" || deployments[deployment] != checksums[config] {
+			t.Errorf("%s config checksum = %q, want %q", deployment, deployments[deployment], checksums[config])
+		}
 	}
 }
 

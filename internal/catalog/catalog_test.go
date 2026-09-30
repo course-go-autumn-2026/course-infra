@@ -108,7 +108,7 @@ func TestImageCatalogUsesImmutableMultiArchReferences(t *testing.T) {
 
 	digest := regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	images := catalog.Images()
-	if len(images) != 9 {
+	if len(images) != 10 {
 		t.Fatalf("Images() returned %d entries", len(images))
 	}
 	for _, image := range images {
