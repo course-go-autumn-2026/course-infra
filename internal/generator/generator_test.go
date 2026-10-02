@@ -113,7 +113,7 @@ func TestObservabilityConfigsMatchRolloutChecksums(t *testing.T) {
 			}
 		}
 	}
-	for deployment, config := range map[string]string{"otel-collector": "otel-collector-config", "grafana": "grafana-provisioning", "loki": "loki-config"} {
+	for deployment, config := range map[string]string{"otel-collector": "otel-collector-config", "jaeger": "jaeger-config", "grafana": "grafana-provisioning", "loki": "loki-config"} {
 		if checksums[config] == "" || deployments[deployment] != checksums[config] {
 			t.Errorf("%s config checksum = %q, want %q", deployment, deployments[deployment], checksums[config])
 		}
