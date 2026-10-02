@@ -39,6 +39,46 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: jaeger-config
+  namespace: tripgo-lab-02
+  labels:
+    app.kubernetes.io/managed-by: tripgoctl
+    app.kubernetes.io/part-of: tripgo-local
+    tripgo.course/lab: "02"
+    tripgo.course/environment: tripgo-lab-02
+  annotations:
+    tripgo.course/generator-version: "v1.0.0"
+    tripgo.course/cluster-id: "golden-cluster-id"
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc: {endpoint: 0.0.0.0:4317}
+    processors:
+      batch:
+        send_batch_size: 512
+        send_batch_max_size: 1024
+    extensions:
+      jaeger_storage:
+        backends:
+          traces:
+            # ponytail: disposable lab history; add persistence only if traces must survive restarts.
+            memory: {max_traces: 10000}
+      jaeger_query:
+        storage: {traces: traces}
+        http: {endpoint: 0.0.0.0:16686}
+    exporters:
+      jaeger_storage_exporter:
+        trace_storage: traces
+    service:
+      extensions: [jaeger_storage, jaeger_query]
+      pipelines:
+        traces: {receivers: [otlp], processors: [batch], exporters: [jaeger_storage_exporter]}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
   name: prometheus-config
   namespace: tripgo-lab-02
   labels:
@@ -278,6 +318,7 @@ metadata:
     tripgo.course/cluster-id: "golden-cluster-id"
 spec:
   replicas: 1
+  strategy: {type: RollingUpdate}
   selector:
     matchLabels: {app.kubernetes.io/name: jaeger, app.kubernetes.io/instance: tripgo-lab-02-jaeger}
   template:
@@ -290,14 +331,21 @@ spec:
         app.kubernetes.io/name: jaeger
         app.kubernetes.io/instance: tripgo-lab-02-jaeger
       annotations:
+        checksum/config: 139b385b87491cb8ac81e73b9ca7d9ff2ac6e9f93ae3b928cbc5b55ac028757c
         tripgo.course/generator-version: "v1.0.0"
         tripgo.course/cluster-id: "golden-cluster-id"
     spec:
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: jaeger
           image: docker.io/jaegertracing/jaeger@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
+          args: [--config=/etc/jaeger/config.yaml]
+          env:
+            - {name: GOMEMLIMIT, value: 160MiB}
           ports:
             - {name: otlp-grpc, containerPort: 4317}
             - {name: ui, containerPort: 16686}
@@ -314,6 +362,11 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
             readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: config, mountPath: /etc/jaeger, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: jaeger-config}
 ---
 apiVersion: v1
 kind: Service
@@ -616,8 +669,8 @@ spec:
           readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 3}
           livenessProbe: {httpGet: {path: /api/health, port: http}, initialDelaySeconds: 10}
           resources:
-            requests: {cpu: 25m, memory: 96Mi}
-            limits: {memory: 384Mi}
+            requests: {cpu: 25m, memory: 256Mi}
+            limits: {memory: 1Gi}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}

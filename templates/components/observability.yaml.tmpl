@@ -33,6 +33,40 @@ metadata:
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: jaeger-config
+  namespace: {{ .Namespace }}
+  labels:
+{{ template "labels4" . }}  annotations:
+{{ template "annotations4" . }}data:
+  config.yaml: |
+{{ template "jaegerConfig" . }}{{ define "jaegerConfig" }}    receivers:
+      otlp:
+        protocols:
+          grpc: {endpoint: 0.0.0.0:4317}
+    processors:
+      batch:
+        send_batch_size: 512
+        send_batch_max_size: 1024
+    extensions:
+      jaeger_storage:
+        backends:
+          traces:
+            # ponytail: disposable lab history; add persistence only if traces must survive restarts.
+            memory: {max_traces: 10000}
+      jaeger_query:
+        storage: {traces: traces}
+        http: {endpoint: 0.0.0.0:16686}
+    exporters:
+      jaeger_storage_exporter:
+        trace_storage: traces
+    service:
+      extensions: [jaeger_storage, jaeger_query]
+      pipelines:
+        traces: {receivers: [otlp], processors: [batch], exporters: [jaeger_storage_exporter]}
+{{ end }}---
+apiVersion: v1
+kind: ConfigMap
+metadata:
   name: prometheus-config
   namespace: {{ .Namespace }}
   labels:
@@ -224,6 +258,7 @@ metadata:
 {{ template "labels4" . }}  annotations:
 {{ template "annotations4" . }}spec:
   replicas: {{ .WorkloadReplicas }}
+  strategy: {type: RollingUpdate}
   selector:
     matchLabels: {app.kubernetes.io/name: jaeger, app.kubernetes.io/instance: {{ .Namespace }}-jaeger}
   template:
@@ -232,12 +267,19 @@ metadata:
 {{ template "labels8" . }}        app.kubernetes.io/name: jaeger
         app.kubernetes.io/instance: {{ .Namespace }}-jaeger
       annotations:
+        checksum/config: {{ configChecksum "jaegerConfig" . }}
 {{ template "annotations8" . }}    spec:
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: jaeger
           image: {{ index .Images "jaeger" }}
+          args: [--config=/etc/jaeger/config.yaml]
+          env:
+            - {name: GOMEMLIMIT, value: 160MiB}
           ports:
             - {name: otlp-grpc, containerPort: 4317}
             - {name: ui, containerPort: 16686}
@@ -254,6 +296,11 @@ metadata:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
             readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: config, mountPath: /etc/jaeger, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: jaeger-config}
 ---
 apiVersion: v1
 kind: Service
@@ -478,8 +525,8 @@ metadata:
           readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 3}
           livenessProbe: {httpGet: {path: /api/health, port: http}, initialDelaySeconds: 10}
           resources:
-            requests: {cpu: 25m, memory: 96Mi}
-            limits: {memory: 384Mi}
+            requests: {cpu: 25m, memory: 256Mi}
+            limits: {memory: 1Gi}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}

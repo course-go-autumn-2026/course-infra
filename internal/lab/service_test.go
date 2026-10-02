@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -301,7 +302,9 @@ func TestWaitForWorkloadsReportsComponentSpecificReadinessOnCancellation(t *test
 		"spec":     map[string]any{"replicas": int64(1)},
 		"status":   map[string]any{"observedGeneration": int64(2), "readyReplicas": int64(0)},
 	}}
-	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), deployment)
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		podResource: "PodList", eventResource: "EventList",
+	}, deployment)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	recorder := &testProgressRecorder{}
@@ -312,6 +315,140 @@ func TestWaitForWorkloadsReportsComponentSpecificReadinessOnCancellation(t *test
 	}
 	if !recorder.contains(progressapi.Readiness, "postgres 0/1") {
 		t.Fatalf("readiness progress was not reported: %+v", recorder.events)
+	}
+}
+
+func TestWaitForWorkloadsReportsStartupDetails(t *testing.T) {
+	t.Parallel()
+	if readinessLimit != 10*time.Minute {
+		t.Fatalf("readiness limit = %s", readinessLimit)
+	}
+	namespace := "tripgo-lab-02"
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	var objects []runtime.Object
+	for _, name := range []string{"jaeger", "grafana", "loki"} {
+		deployment := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]any{"name": name, "namespace": namespace, "generation": int64(1)},
+			"spec":     map[string]any{"replicas": int64(1)},
+			"status":   map[string]any{"observedGeneration": int64(1)},
+		}}
+		if name == "jaeger" {
+			deployment.Object["status"] = map[string]any{"observedGeneration": int64(1), "updatedReplicas": int64(1), "readyReplicas": int64(1), "availableReplicas": int64(1)}
+		}
+		objects = append(objects, deployment)
+	}
+	grafana := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "grafana-new", Namespace: namespace, UID: "current",
+		CreationTimestamp: metav1.NewTime(time.Now()),
+		Labels: map[string]string{"app.kubernetes.io/managed-by": "tripgoctl", "tripgo.course/environment": namespace,
+			"app.kubernetes.io/name": "grafana", "app.kubernetes.io/instance": namespace + "-grafana"},
+	}, Status: corev1.PodStatus{Phase: corev1.PodPending}}
+	old := grafana.DeepCopy()
+	old.Name, old.UID, old.CreationTimestamp = "grafana-old", "previous", metav1.NewTime(time.Now().Add(-time.Minute))
+	old.Status.Phase = corev1.PodRunning
+	terminating := grafana.DeepCopy()
+	terminating.Name, terminating.UID = "grafana-terminating", "terminating"
+	terminating.CreationTimestamp = metav1.NewTime(time.Now().Add(time.Minute))
+	terminating.DeletionTimestamp = &terminating.CreationTimestamp
+	terminating.Status.Phase = corev1.PodRunning
+	loki := grafana.DeepCopy()
+	loki.Name, loki.UID = "loki-pod", "loki"
+	loki.Labels["app.kubernetes.io/name"], loki.Labels["app.kubernetes.io/instance"] = "loki", namespace+"-loki"
+	loki.Status.Phase = corev1.PodRunning
+	objects = append(objects, grafana, old, terminating, loki,
+		&corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "pulling", Namespace: namespace},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", UID: grafana.UID}, Reason: "Pulling",
+			Series: &corev1.EventSeries{LastObservedTime: metav1.NewMicroTime(time.Now())}},
+		&corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "scheduled", Namespace: namespace},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", UID: grafana.UID}, Reason: "Scheduled",
+			LastTimestamp: metav1.NewTime(time.Now().Add(-time.Minute))},
+		&corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "stale-failure", Namespace: namespace},
+			InvolvedObject: corev1.ObjectReference{Kind: "Pod", UID: old.UID}, Reason: "Failed", Message: "old pod image error",
+			LastTimestamp: metav1.NewTime(time.Now().Add(time.Minute))},
+	)
+	client := dynamicfake.NewSimpleDynamicClient(scheme, objects...)
+	recorder := &testProgressRecorder{}
+	ctx, cancel := context.WithTimeout(progressapi.WithReporter(t.Context(), recorder), 100*time.Millisecond)
+	defer cancel()
+	items := []workload{{"jaeger", deploymentResource}, {"grafana", deploymentResource}, {"loki", deploymentResource}}
+	if err := waitForWorkloads(ctx, client, namespace, items, 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("wait error = %v", err)
+	}
+	for _, text := range []string{"grafana 0/1: downloading image", "loki 0/1: running; waiting for readiness probe", "Ready: jaeger", "Workloads: 1/3 ready; waiting", "/ 10m0s"} {
+		if !recorder.contains(progressapi.Readiness, text) {
+			t.Errorf("missing progress %q: %+v", text, recorder.events)
+		}
+	}
+	if recorder.contains(progressapi.Readiness, "old pod image error") {
+		t.Fatal("replacement pod inherited stale events")
+	}
+	// Event diagnostics are optional; pod state must survive an events API failure.
+	client.PrependReactor("list", "events", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("events unavailable")
+	})
+	details, err := workloadStartupDetails(t.Context(), client, namespace)
+	if err == nil || details["loki"] != "running; waiting for readiness probe" {
+		t.Fatalf("partial diagnostics = %v, %v", details, err)
+	}
+}
+
+func TestWaitForWorkloadsPreservesLastStatusWhenAPIReadIsCanceled(t *testing.T) {
+	t.Parallel()
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	reads := 0
+	client.PrependReactor("get", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		reads++
+		if reads == 3 { // Cancel while rechecking the already-ready Jaeger.
+			cancel()
+			return true, nil, errors.New("client rate limiter Wait returned an error: context canceled")
+		}
+		status := map[string]any{"observedGeneration": int64(1)}
+		if action.(k8stesting.GetAction).GetName() == "jaeger" {
+			status["updatedReplicas"], status["readyReplicas"], status["availableReplicas"] = int64(1), int64(1), int64(1)
+		}
+		return true, &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{"generation": int64(1)},
+			"spec":     map[string]any{"replicas": int64(1)}, "status": status,
+		}}, nil
+	})
+	err := waitForWorkloads(ctx, client, "tripgo-lab-02", []workload{{"jaeger", deploymentResource}, {"grafana", deploymentResource}}, 1)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "grafana (desired=1 ready=0") || strings.Contains(err.Error(), "jaeger") || strings.Contains(err.Error(), "rate limiter") {
+		t.Fatalf("last readiness was replaced by cancellation: %v", err)
+	}
+	if reads != 3 {
+		t.Fatalf("continued API polling after cancellation: %d reads", reads)
+	}
+}
+
+func TestPodStartupDetail(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status corev1.PodStatus
+		event  *corev1.Event
+		want   string
+	}{
+		{name: "scheduling", status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: "unbound PVC"}}}, want: "waiting for scheduling: unbound PVC"},
+		{name: "image failure", status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "retrying download"}}}}}, event: &corev1.Event{Reason: "Pulling"}, want: "ImagePullBackOff: retrying download"},
+		{name: "crash loop", status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff", Message: "backing off"}}}}}, want: "CrashLoopBackOff: backing off"},
+		{name: "OOM restart", status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}, LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}}}}, want: "CrashLoopBackOff: last exit OOMKilled (code 137)"},
+		{name: "init failure", status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{Name: "init", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}}}}}, want: "container init exited: Error (code 1)"},
+		{name: "starting", status: corev1.PodStatus{Phase: corev1.PodRunning}, event: &corev1.Event{Reason: "Pulling"}, want: "running; waiting for readiness probe"},
+		{name: "ready", status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}, want: "pod ready; waiting for workload update"},
+		{name: "volumes", status: corev1.PodStatus{Phase: corev1.PodPending}, event: &corev1.Event{Reason: "FailedMount", Message: "volume not available"}, want: "FailedMount: volume not available"},
+		{name: "no events", status: corev1.PodStatus{Phase: corev1.PodPending}, want: "preparing pod (volumes, images, containers)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := podStartupDetail(&corev1.Pod{Status: tc.status}, tc.event); got != tc.want {
+				t.Fatalf("pod detail = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

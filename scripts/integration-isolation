@@ -268,11 +268,12 @@ curl -fsSG --data-urlencode 'match[]={service_name="integration-lab2-only"}' --d
 	.status == "success" and (.data | length) == 1 and
 	all(.data[]; .service_name == "integration-lab2-only" and .trace_id == null and .span_id == null)' >/dev/null
 
-# Logs survive stop/start while peer environments remain ready.
+# Logs survive stop/start; in-memory traces do not. Peer environments stay ready.
 (cd "$work/lab2" && "$tripgoctl" environment stop >/dev/null)
 (cd "$work/lab4" && "$tripgoctl" environment status | grep -F 'Status:      ready' >/dev/null)
 (cd "$work/lab2" && "$tripgoctl" environment start >/dev/null)
 retry_log_count http://localhost:22300/api/datasources/proxy/uid/loki/loki/api/v1/query_range '{service_name="integration-lab2-only"}' 1
+retry_trace_count "http://localhost:22300/api/datasources/proxy/uid/$jaeger_datasource_uid/api/traces?service=integration-lab2-only&operation=trace-lab-2-only&limit=20" 0
 
 # Every old owned pod UID disappears and a complete disjoint ready UID set
 # replaces it while all host endpoints and connect output remain stable.

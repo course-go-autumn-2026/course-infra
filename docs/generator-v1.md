@@ -63,9 +63,11 @@ generator-version и cluster-id. Шаблоны pod содержат те же �
 У workloads заданы запросы ресурсов, ограничения памяти, пробы и ограниченные
 security contexts.
 
-Pod templates Collector, Grafana и Loki содержат SHA-256 соответствующей
+Pod templates Collector, Jaeger, Grafana и Loki содержат SHA-256 соответствующей
 конфигурации: изменение ConfigMap вызывает rollout даже при неизменной версии
-CLI. Loki хранит логи, индекс, WAL и данные compactor на PVC; compactor удаляет
+CLI. Jaeger хранит не более 10 000 трейсов в памяти, без PVC; перезапуск очищает
+историю.
+Loki хранит логи, индекс, WAL и данные compactor на PVC; compactor удаляет
 логи старше семи дней. Grafana использует встроенные плагины закреплённого образа,
 без автоматического скачивания и обновления preinstall-плагинов.
 
@@ -76,10 +78,10 @@ CLI. Loki хранит логи, индекс, WAL и данные compactor н�
 | Lab | Files | Kubernetes resources |
 |---:|---:|---:|
 | 1 | 2 | 5 |
-| 2 | 3 | 23 |
-| 3 | 4 | 25 |
-| 4 | 6 | 31 |
-| 5 | 6 | 31 |
+| 2 | 3 | 25 |
+| 3 | 4 | 27 |
+| 4 | 6 | 34 |
+| 5 | 6 | 34 |
 
 `internal/generator/generator_test.go` проверяет:
 
