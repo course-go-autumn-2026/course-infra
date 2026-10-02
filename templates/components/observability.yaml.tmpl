@@ -478,8 +478,8 @@ metadata:
           readinessProbe: {httpGet: {path: /api/health, port: http}, periodSeconds: 3}
           livenessProbe: {httpGet: {path: /api/health, port: http}, initialDelaySeconds: 10}
           resources:
-            requests: {cpu: 25m, memory: 96Mi}
-            limits: {memory: 384Mi}
+            requests: {cpu: 25m, memory: 256Mi}
+            limits: {memory: 1Gi}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}

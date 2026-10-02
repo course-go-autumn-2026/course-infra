@@ -43,6 +43,28 @@ func TestPlainProgressEmitsMilestonesButNotActivityOrANSI(t *testing.T) {
 	}
 }
 
+func TestWorkloadProgressShowsDetailsAndRepeatedWaitUpdates(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	session := newProgressSession(&output, false, nil, "environment start")
+	session.Report(progressapi.Event{Kind: progressapi.Stage, Message: "Waiting for workloads (up to 10 minutes)"})
+	for _, elapsed := range []string{"15s", "30s"} {
+		session.Report(progressapi.Event{Kind: progressapi.Readiness, Message: "grafana 0/1: downloading image (or waiting in image pull queue)\nloki 0/1: running; waiting for readiness probe\nReady: postgres, otel-collector, jaeger, prometheus\nWorkloads: 4/6 ready; waiting " + elapsed + " / 10m0s"})
+	}
+	view := newProgressModel(session).View()
+	for _, text := range []string{"grafana 0/1: downloading image", "loki 0/1: running; waiting for readiness probe", "Workloads: 4/6 ready; waiting 30s / 10m0s"} {
+		if !strings.Contains(output.String(), text) || !strings.Contains(view, text) {
+			t.Errorf("missing %q in plain/TTY progress:\n%s\n%s", text, output.String(), view)
+		}
+	}
+	if strings.Count(output.String(), "Workloads: 4/6 ready") != 2 || strings.Contains(output.String(), "\x1b") {
+		t.Fatalf("plain heartbeat output = %q", output.String())
+	}
+	if err := session.finish(nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFailedProgressRetainsBoundedRedactedTailAndSecureLog(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
